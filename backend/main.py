@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# from backend.routers import course_router  # Placeholder: uncomment when router is ready
+from routers.course import router as course_router
 
 app = FastAPI(
     title="LearnX 3.0 API",
@@ -17,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# app.include_router(course_router.router)  # Placeholder: uncomment when router is ready
+app.include_router(course_router)
 
 
 @app.get("/health")

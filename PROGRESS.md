@@ -24,10 +24,14 @@
 
 ---
 
-## Phase 3: The AI Brain ⏳ PENDING
-- [ ] `backend/services/llm_router.py` — Groq: user prompt → search queries
-- [ ] `backend/services/synthesizer.py` — Gemini: scraped content → Course JSON
-- [ ] `backend/routers/course.py` — POST `/api/generate-course` endpoint
+## Phase 3: The AI Brain ✅ COMPLETE
+- [x] `backend/services/llm_router.py` — Groq (llama-3.3-70b): user prompt → search queries + intent parsing
+- [x] `backend/services/synthesizer.py` — Gemini 2.0 Flash (google-genai SDK): scraped content → Course JSON
+- [x] `backend/routers/course.py` — POST `/api/generate-course` full pipeline endpoint
+- [x] `backend/main.py` — router wired in
+- [x] Migrated from deprecated `google-generativeai` → `google-genai` v1.66.0
+
+**HITL Status:** Awaiting cURL test of `/api/generate-course`
 
 ---
 
