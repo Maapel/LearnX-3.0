@@ -1,12 +1,13 @@
 """
 synthesizer.py — LearnX 3.0 Backend
-Feeds scraped content into Gemini (with Groq fallback) and returns a
+Feeds scraped content into Gemini (with Groq + Ollama fallbacks) and returns a
 structured Course JSON matching the Pydantic Course schema.
 
 Model cascade:
-  1. gemini-1.5-flash   (Gemini free tier)
-  2. gemini-1.5-flash-8b (smaller, higher free quota)
-  3. Groq llama-3.3-70b  (fallback if Gemini quota exhausted)
+  1. gemini-2.0-flash-lite  (Gemini free tier — highest quota)
+  2. gemini-2.0-flash        (larger Gemini model)
+  3. Groq llama-3.3-70b      (fallback if Gemini quota exhausted)
+  4. Ollama local model       (local fallback — no rate limits)
 """
 
 from __future__ import annotations
@@ -28,18 +29,20 @@ load_dotenv(dotenv_path=_env_path)
 from google import genai
 from google.genai import types as genai_types
 from groq import Groq
+import httpx
 
 logger = logging.getLogger(__name__)
 
-_GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-_GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
+_GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
+_GROQ_API_KEY    = os.getenv("GROQ_API_KEY", "")
+_OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+_OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "llama3.2")
 
 # Global semaphore: caps concurrent LLM synthesis calls to 1.
 # Prevents Groq free-tier quota exhaustion under concurrent FastAPI requests.
 _llm_semaphore = asyncio.Semaphore(1)
 
 # Gemini model cascade — use full model path as required by google-genai v1 SDK
-# gemini-2.0-flash-lite has the highest free-tier quota
 _GEMINI_MODELS = ["models/gemini-2.0-flash-lite", "models/gemini-2.0-flash"]
 _GROQ_MODEL    = "llama-3.3-70b-versatile"
 
@@ -268,7 +271,8 @@ def _fallback_course(topic: str, difficulty: str) -> dict:
                     "### Suggested next steps\n"
                     "1. Verify GEMINI_API_KEY and GROQ_API_KEY in your .env file.\n"
                     "2. Check API quotas at aistudio.google.com and console.groq.com.\n"
-                    "3. Retry the request.\n"
+                    "3. If rate-limited, start Ollama locally: `ollama serve` and ensure a model is pulled.\n"
+                    "4. Retry the request.\n"
                 ),
                 "key_takeaways": [
                     f"{topic} is an important area of study.",
@@ -358,6 +362,44 @@ def _try_groq(prompt: str, max_retries: int = 3) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Ollama local synthesis fallback
+# ---------------------------------------------------------------------------
+def _try_ollama(prompt: str) -> str:
+    """
+    Use a local Ollama model for synthesis — no API key, no rate limits.
+    Calls POST /api/chat with stream=false.
+    Returns raw text or raises if Ollama is unreachable or model is missing.
+    """
+    url = f"{_OLLAMA_BASE_URL}/api/chat"
+    payload = {
+        "model": _OLLAMA_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert curriculum designer and educator. "
+                    "Return ONLY valid JSON — no markdown fences, no preamble, no explanation. "
+                    "Every lesson content_markdown MUST be at least 600 words. "
+                    "All code examples MUST use fenced ```language``` blocks."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "options": {"temperature": 0.7},
+    }
+
+    logger.info("Falling back to Ollama (%s @ %s) for synthesis.", _OLLAMA_MODEL, _OLLAMA_BASE_URL)
+    with httpx.Client(timeout=300.0) as client:  # local models can be slow
+        response = client.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        content = data["message"]["content"]
+        logger.info("Ollama synthesis succeeded.")
+        return content
+
+
+# ---------------------------------------------------------------------------
 # Main public function
 # ---------------------------------------------------------------------------
 async def synthesize_course(
@@ -369,7 +411,7 @@ async def synthesize_course(
 ) -> dict:
     """
     Synthesize a Course JSON from sourced material.
-    Cascade: Gemini 1.5-flash → Gemini 1.5-flash-8b → Groq llama-3.3-70b → fallback.
+    Cascade: Gemini → Groq → Ollama → static fallback.
     """
     context_block = _build_context(search_results, scraped_articles, transcripts)
     prompt = (
@@ -399,9 +441,17 @@ async def synthesize_course(
                 raw_text = await asyncio.to_thread(_try_groq, prompt)
                 logger.info("Synthesis via Groq succeeded.")
             except Exception as groq_exc:
-                logger.error("Groq synthesis also failed: %s", groq_exc)
+                logger.warning("Groq synthesis failed: %s — trying Ollama.", groq_exc)
 
-    # ── 3. Parse + validate ───────────────────────────────────────────────
+        # ── 3. Try Ollama if Groq also failed ──────────────────────────────
+        if raw_text is None:
+            try:
+                raw_text = await asyncio.to_thread(_try_ollama, prompt)
+                logger.info("Synthesis via Ollama succeeded.")
+            except Exception as ollama_exc:
+                logger.error("Ollama synthesis also failed: %s", ollama_exc)
+
+    # ── 4. Parse + validate ───────────────────────────────────────────────
     if raw_text:
         try:
             stripped = _strip_fences(raw_text)
@@ -417,7 +467,7 @@ async def synthesize_course(
         except (json.JSONDecodeError, ValueError) as parse_exc:
             logger.error("Failed to parse/validate LLM response: %s", parse_exc)
 
-    # ── 4. Hard fallback ──────────────────────────────────────────────────
+    # ── 5. Hard fallback ──────────────────────────────────────────────────
     logger.error("All synthesis attempts failed. Returning minimal fallback course.")
     return _fallback_course(topic, difficulty)
 

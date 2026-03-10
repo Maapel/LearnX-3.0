@@ -53,11 +53,19 @@
 - [ ] Loading skeletons during 30–60s generation
 - [ ] Connect to backend `POST /api/generate-course`
 
-## TODO (Post-Phase 4)
-- [ ] **Ollama local fallback** — Add `llm_router.py` + `synthesizer.py` support for Ollama
-  (model: `llama3.2` or `mistral`) so courses can be generated without any API keys
-  or rate limits. Useful for local dev and testing. Endpoint: `OLLAMA_BASE_URL` (already in .env.example).
-  Priority: HIGH — eliminates Groq free-tier rate limit dependency during testing.
+## Ollama Local Fallback ✅ COMPLETE
+- [x] `synthesizer.py` — cascade extended: Gemini → Groq → **Ollama** → static fallback
+- [x] `llm_router.py` — both `generate_search_queries` and `parse_learning_intent` cascade: Groq → **Ollama** → basic fallback
+- [x] `.env.example` — added `OLLAMA_MODEL=llama3.2` (configurable)
+- Ollama is called via httpx POST to `/api/chat` (no API key, no rate limits)
+- Timeout: 300s for synthesis, 120s for query gen (local models can be slow)
+
+**To use Ollama locally:**
+```bash
+ollama serve          # start the daemon
+ollama pull llama3.2  # or: ollama pull mistral
+```
+Set `OLLAMA_BASE_URL=http://localhost:11434` and `OLLAMA_MODEL=llama3.2` in `.env`.
 
 ---
 
