@@ -24,6 +24,12 @@
 
 ---
 
+## Expert Evaluation ✅ COMPLETE (see EXPERT_EVALUATION_REPORT.md)
+- 5 topics tested: Quantum Computing, Python, Machine Learning, React Web Dev, Blockchain
+- Average score: 3.4/10 | 0 PASS, 2 PARTIAL, 3 FAIL
+- Top issues: shallow content (~130 words/lesson), no code blocks, rate limit fragility
+- P0 fixes needed before Phase 4: word count enforcement, code block requirement, Groq retry
+
 ## Phase 3: The AI Brain ✅ COMPLETE
 - [x] `backend/services/llm_router.py` — Groq (llama-3.3-70b): user prompt → search queries + intent parsing
 - [x] `backend/services/synthesizer.py` — Gemini 2.0 Flash (google-genai SDK): scraped content → Course JSON

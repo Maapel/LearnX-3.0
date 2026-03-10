@@ -66,7 +66,11 @@ Source URLs are either null, generic, or potentially hallucinated (same domain r
 **Weaknesses:**
 - No mathematical notation (bra-ket |ψ⟩, Bloch sphere) which is needed even at beginner level
 - Quantum circuit diagrams are described in prose rather than shown
-- No mention of NISQ (Noisy Intermediate-Scale Quantum) — the actual state of hardware today
+- Lessons critically shallow — avg ~92 words, 20–30 min total read, not 12 hours
+- Module naming redundant: "Foundations" and "Fundamentals" indistinguishable for beginners
+- Measurement postulate absent — without it, learners can't understand why quantum algorithms work
+- Quantum cryptography lesson (63 words) conflates QKD with quantum cryptography broadly
+- No NISQ era context — essential for 2024+ relevance
 - Entanglement explanation glosses over Bell states and EPR pairs
 
 **Missing Topics:** Quantum error correction, decoherence, quantum advantage vs classical, hardware implementations (superconducting qubits, photonics, ion traps), Quantum Volume metric
@@ -235,7 +239,7 @@ Source URLs are either null, generic, or potentially hallucinated (same domain r
 | Content Accuracy | 6 | 6 | 5 | 1 | 5 | **4.6** |
 | Depth Appropriateness | 5 | 4 | 3 | 1 | 4 | **3.4** |
 | Structure Quality | 6 | 5 | 4 | 2 | 5 | **4.4** |
-| Content Richness | 4 | 3 | 2 | 1 | 3 | **2.6** |
+| Content Richness | 3 | 3 | 2 | 1 | 3 | **2.4** |
 | **Overall** | **5** | **4** | **3** | **1** | **4** | **3.4** |
 
 ---
