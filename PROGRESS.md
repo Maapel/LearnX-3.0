@@ -46,11 +46,18 @@
 
 ---
 
-## Phase 4: The Frontend UI ⏳ PENDING
-- [ ] Dark-mode Tailwind layout
-- [ ] `PromptInput` component
-- [ ] `CourseViewer` with sidebar + markdown renderer + YouTube iframes
-- [ ] Connect to backend API with loading skeletons
+## Phase 4: The Frontend UI 🚧 IN PROGRESS
+- [ ] Dark-mode Tailwind layout (globals.css + layout.tsx)
+- [ ] `PromptInput` component — topic input + difficulty selector + submit
+- [ ] `CourseViewer` with sidebar (module/lesson nav) + markdown renderer + YouTube iframes
+- [ ] Loading skeletons during 30–60s generation
+- [ ] Connect to backend `POST /api/generate-course`
+
+## TODO (Post-Phase 4)
+- [ ] **Ollama local fallback** — Add `llm_router.py` + `synthesizer.py` support for Ollama
+  (model: `llama3.2` or `mistral`) so courses can be generated without any API keys
+  or rate limits. Useful for local dev and testing. Endpoint: `OLLAMA_BASE_URL` (already in .env.example).
+  Priority: HIGH — eliminates Groq free-tier rate limit dependency during testing.
 
 ---
 
