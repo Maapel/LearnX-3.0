@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -57,7 +58,7 @@ You must return a single JSON object that EXACTLY matches this schema (no extra 
           "lesson_title": "string",
           "content_type": "video" | "article" | "concept_breakdown",
           "source_url": "string or null",
-          "content_markdown": "string (minimum 200 words of rich teaching content)",
+          "content_markdown": "string — MINIMUM 600 WORDS of rich teaching content",
           "key_takeaways": ["string", ...]
         }
       ]
@@ -65,18 +66,37 @@ You must return a single JSON object that EXACTLY matches this schema (no extra 
   ]
 }
 
-Rules:
-- Create between 3 and 5 modules.
-- Each module must have between 2 and 4 lessons.
-- Every lesson's content_markdown MUST be at least 200 words of rich, educational markdown prose.
-  Use headings (##, ###), bullet lists, code blocks, or numbered steps where appropriate.
-- Synthesize information from the provided source material into content_markdown.
-- Assign source_url to the most relevant URL from the provided sources when applicable; use null otherwise.
-- Set content_type to "video" when the source is a YouTube transcript, "article" when based on a
-  web article, and "concept_breakdown" for synthesized conceptual explanations.
-- estimated_hours should be a realistic total study time (a float, e.g. 4.5).
-- difficulty_level must match the requested difficulty exactly.
-- Return ONLY valid JSON. No markdown code fences, no commentary, no extra text before or after.
+STRICT RULES — violating any of these makes the output invalid:
+
+1. CONTENT DEPTH (CRITICAL): Every lesson's content_markdown MUST contain AT LEAST 600 WORDS.
+   This is non-negotiable. Short, stub-like content is rejected. Write like a university textbook —
+   include explanations, examples, analogies, and worked problems. Count your words before finishing.
+
+2. CODE BLOCKS (CRITICAL for technical topics): Any code, commands, or syntax examples MUST be
+   written inside fenced code blocks using triple backticks and a language identifier:
+   ```python
+   # correct — always use this format
+   x = 42
+   print(x)
+   ```
+   NEVER write code inline in prose. NEVER use semicolons to combine Python statements on one line.
+
+3. LESSON VARIETY: Use a mix of content_type values across lessons. Do not assign "article" to all
+   lessons. Use "concept_breakdown" for conceptual explanations and "video" only when a transcript
+   source is available.
+
+4. SOURCE URLS: Only assign source_url values from URLs that appear in the SOURCE MATERIAL section.
+   Do not invent or hallucinate URLs. Use null if no relevant URL exists for a lesson.
+
+5. ESTIMATED HOURS: Calculate realistically. Assume 200 words/minute reading pace plus 2x for
+   practice time. A 600-word lesson = ~6 minutes reading + ~12 minutes practice = ~0.3 hours.
+   For a 4-module, 3-lesson-each course: roughly 3.5–6 hours total.
+
+6. MODULE STRUCTURE: Create 3–5 modules, each with 2–4 lessons. Use distinct, non-redundant
+   module titles. Each module should cover a clearly different aspect of the topic.
+
+7. JSON ONLY: Return ONLY valid JSON. No markdown code fences wrapping the JSON, no commentary,
+   no preamble, no postamble. The response must start with {{ and end with }}.
 """
 
 
@@ -192,6 +212,9 @@ def _build_context(
 # ---------------------------------------------------------------------------
 # Helper: validate parsed course dict shape
 # ---------------------------------------------------------------------------
+_MIN_LESSON_WORDS = 300  # hard floor after prompt asks for 600; guards against stubbed output
+
+
 def _validate(course_dict: dict) -> None:
     required = {"course_title", "difficulty_level", "estimated_hours", "modules"}
     missing = required - course_dict.keys()
@@ -199,9 +222,23 @@ def _validate(course_dict: dict) -> None:
         raise ValueError(f"Missing keys: {missing}")
     if not isinstance(course_dict["modules"], list) or not course_dict["modules"]:
         raise ValueError("No modules found")
+
+    total_words = 0
+    short_lessons = []
     for mod in course_dict["modules"]:
         if "lessons" not in mod or not isinstance(mod["lessons"], list) or not mod["lessons"]:
             raise ValueError(f"Module '{mod.get('module_title')}' has no lessons")
+        for lesson in mod["lessons"]:
+            wc = len(lesson.get("content_markdown", "").split())
+            total_words += wc
+            if wc < _MIN_LESSON_WORDS:
+                short_lessons.append((lesson.get("lesson_title", "?"), wc))
+
+    if short_lessons:
+        details = ", ".join(f"'{t}' ({w} words)" for t, w in short_lessons)
+        logger.warning("Shallow lessons detected (<%d words): %s", _MIN_LESSON_WORDS, details)
+        # Warn but don't hard-reject — let the course through with a log warning
+    logger.info("Total content words across all lessons: %d", total_words)
 
 
 # ---------------------------------------------------------------------------
@@ -269,26 +306,51 @@ def _try_gemini(prompt: str) -> str:
 # ---------------------------------------------------------------------------
 # Groq synthesis fallback
 # ---------------------------------------------------------------------------
-def _try_groq(prompt: str) -> str:
-    """Use Groq llama-3.3-70b as synthesis fallback. Returns raw text or raises."""
+def _try_groq(prompt: str, max_retries: int = 3) -> str:
+    """
+    Use Groq llama-3.3-70b as synthesis fallback with exponential backoff retry.
+    Retries on 429 (rate limit) with delays: 5s → 15s → 45s.
+    Returns raw text or raises on final failure.
+    """
     if not _GROQ_API_KEY:
         raise RuntimeError("No GROQ_API_KEY")
 
     logger.info("Falling back to Groq (%s) for synthesis.", _GROQ_MODEL)
     client = Groq(api_key=_GROQ_API_KEY)
-    response = client.chat.completions.create(
-        model=_GROQ_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are an expert curriculum designer. Return ONLY valid JSON, no markdown fences.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.7,
-        max_tokens=8192,
-    )
-    return response.choices[0].message.content
+    delays = [5, 15, 45]
+
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model=_GROQ_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are an expert curriculum designer and educator. "
+                            "Return ONLY valid JSON — no markdown fences, no preamble, no explanation. "
+                            "Every lesson content_markdown MUST be at least 600 words. "
+                            "All code examples MUST use fenced ```language``` blocks."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.7,
+                max_tokens=8192,
+            )
+            return response.choices[0].message.content
+        except Exception as exc:
+            err_str = str(exc)
+            is_rate_limit = "429" in err_str or "rate_limit" in err_str.lower() or "rate limit" in err_str.lower()
+            if is_rate_limit and attempt < max_retries - 1:
+                wait = delays[attempt]
+                logger.warning(
+                    "Groq rate limit hit (attempt %d/%d). Retrying in %ds...",
+                    attempt + 1, max_retries, wait,
+                )
+                time.sleep(wait)
+            else:
+                raise
 
 
 # ---------------------------------------------------------------------------
