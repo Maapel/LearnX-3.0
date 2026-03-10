@@ -111,30 +111,33 @@ async def get_transcript(url: str) -> dict:
 def _fetch_transcript(video_id: str) -> list | None:
     """
     Synchronous helper: try English first, fall back to any available language.
-    Returns a list of transcript snippet dicts, or None on failure.
+    Returns a list of {"text": str} dicts, or None on failure.
+    Uses the v1.x instance-based API.
     """
-    # --- Attempt 1: English transcript ---
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        api = YouTubeTranscriptApi()
+
+        # --- Attempt 1: English transcript via shortcut ---
         try:
-            transcript = transcript_list.find_transcript(["en", "en-US", "en-GB"])
+            fetched = api.fetch(video_id, languages=("en", "en-US", "en-GB"))
             logger.info("Found English transcript for video '%s'.", video_id)
-            return transcript.fetch()
+            return [{"text": snippet.text} for snippet in fetched]
         except Exception:
             logger.warning(
                 "No English transcript for '%s'. Trying any available language.", video_id
             )
 
         # --- Attempt 2: Any available language ---
+        transcript_list = api.list(video_id)
         for transcript in transcript_list:
             try:
-                data = transcript.fetch()
+                fetched = transcript.fetch()
                 logger.info(
                     "Using '%s' transcript for video '%s'.",
                     transcript.language_code,
                     video_id,
                 )
-                return data
+                return [{"text": snippet.text} for snippet in fetched]
             except Exception as lang_exc:
                 logger.warning(
                     "Failed to fetch '%s' transcript: %s",
