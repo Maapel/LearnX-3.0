@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 _GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 _GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
 
+# Global semaphore: caps concurrent LLM synthesis calls to 1.
+# Prevents Groq free-tier quota exhaustion under concurrent FastAPI requests.
+_llm_semaphore = asyncio.Semaphore(1)
+
 # Gemini model cascade — use full model path as required by google-genai v1 SDK
 # gemini-2.0-flash-lite has the highest free-tier quota
 _GEMINI_MODELS = ["models/gemini-2.0-flash-lite", "models/gemini-2.0-flash"]
@@ -381,20 +385,21 @@ async def synthesize_course(
 
     raw_text: str | None = None
 
-    # ── 1. Try Gemini ─────────────────────────────────────────────────────
-    try:
-        raw_text = await asyncio.to_thread(_try_gemini, prompt)
-        logger.info("Synthesis via Gemini succeeded.")
-    except Exception as gemini_exc:
-        logger.warning("Gemini synthesis failed: %s — trying Groq.", gemini_exc)
-
-    # ── 2. Try Groq if Gemini failed ─────────────────────────────────────
-    if raw_text is None:
+    async with _llm_semaphore:
+        # ── 1. Try Gemini ──────────────────────────────────────────────────
         try:
-            raw_text = await asyncio.to_thread(_try_groq, prompt)
-            logger.info("Synthesis via Groq succeeded.")
-        except Exception as groq_exc:
-            logger.error("Groq synthesis also failed: %s", groq_exc)
+            raw_text = await asyncio.to_thread(_try_gemini, prompt)
+            logger.info("Synthesis via Gemini succeeded.")
+        except Exception as gemini_exc:
+            logger.warning("Gemini synthesis failed: %s — trying Groq.", gemini_exc)
+
+        # ── 2. Try Groq if Gemini failed ───────────────────────────────────
+        if raw_text is None:
+            try:
+                raw_text = await asyncio.to_thread(_try_groq, prompt)
+                logger.info("Synthesis via Groq succeeded.")
+            except Exception as groq_exc:
+                logger.error("Groq synthesis also failed: %s", groq_exc)
 
     # ── 3. Parse + validate ───────────────────────────────────────────────
     if raw_text:

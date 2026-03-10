@@ -24,6 +24,11 @@
 
 ---
 
+## Expert Re-Evaluation V2 ✅ COMPLETE (see EXPERT_EVALUATION_REPORT_V2.md)
+- Fixes validated: ML 3→6 (+3), Python 4→5 (+1) on successful runs
+- Root cause of remaining FAILs: Groq concurrent quota exhaustion (not fix quality)
+- Applied: asyncio.Semaphore(1) — serializes LLM calls, prevents concurrent quota burn
+
 ## Expert Evaluation ✅ COMPLETE (see EXPERT_EVALUATION_REPORT.md)
 - 5 topics tested: Quantum Computing, Python, Machine Learning, React Web Dev, Blockchain
 - Average score: 3.4/10 | 0 PASS, 2 PARTIAL, 3 FAIL
