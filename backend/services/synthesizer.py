@@ -183,14 +183,33 @@ def _escape_control_chars_in_strings(text: str) -> str:
     return "".join(result)
 
 
+def _fix_python_literals(text: str) -> str:
+    """Replace Python literals that are invalid JSON: None→null, True→true, False→false."""
+    # Only replace when they appear as JSON values (after : or [ or ,)
+    text = re.sub(r'(?<=[:\[,\s])\bNone\b', 'null', text)
+    text = re.sub(r'(?<=[:\[,\s])\bTrue\b', 'true', text)
+    text = re.sub(r'(?<=[:\[,\s])\bFalse\b', 'false', text)
+    return text
+
+
+def _fix_missing_values(text: str) -> str:
+    """Replace bare empty values like `"key": ,` or `"key": }` with null."""
+    text = re.sub(r':\s*,', ': null,', text)
+    text = re.sub(r':\s*}', ': null}', text)
+    text = re.sub(r':\s*]', ': null]', text)
+    return text
+
+
 def _safe_json_loads(text: str) -> dict:
     """
-    Parse JSON robustly through 5 escalating strategies:
+    Parse JSON robustly through 7 escalating strategies:
     1. Standard parse (handles clean LLM output)
     2. Extract first {...} block (strips preamble text)
     3. Escape raw control chars inside strings (fixes literal newlines in values)
-    4. Fix invalid backslash escapes (fixes \\p, \\s etc.)
-    5. Strip remaining non-printable control chars, then fix escapes
+    4. Fix Python literals (None/True/False → null/true/false)
+    5. Fix missing/empty values ("key": , → "key": null,)
+    6. Fix invalid backslash escapes (fixes \\p, \\s etc.)
+    7. All fixes combined + strip remaining junk
     """
     # 1. Standard
     try:
@@ -212,21 +231,34 @@ def _safe_json_loads(text: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # 3. Escape control chars inside strings (primary fix for literal newlines)
+    # 3. Escape control chars inside strings (fixes literal newlines from Groq)
     try:
         return json.loads(_escape_control_chars_in_strings(snippet))
     except json.JSONDecodeError:
         pass
 
-    # 4. Fix invalid backslash sequences
+    # 4. Python literals (None/True/False)
+    try:
+        return json.loads(_fix_python_literals(snippet))
+    except json.JSONDecodeError:
+        pass
+
+    # 5. Missing/empty values
+    try:
+        return json.loads(_fix_missing_values(_fix_python_literals(snippet)))
+    except json.JSONDecodeError:
+        pass
+
+    # 6. Fix invalid backslash sequences
     try:
         return json.loads(_fix_invalid_escapes(snippet))
     except json.JSONDecodeError:
         pass
 
-    # 5. Both fixes combined + strip remaining junk
+    # 7. All fixes combined + strip remaining control chars
     cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', snippet)
-    return json.loads(_fix_invalid_escapes(_escape_control_chars_in_strings(cleaned)))
+    fixed = _fix_missing_values(_fix_python_literals(_fix_invalid_escapes(_escape_control_chars_in_strings(cleaned))))
+    return json.loads(fixed)
 
 
 def _strip_fences(text: str) -> str:
@@ -274,7 +306,7 @@ def _gemini_call(prompt: str, schema: genai_types.Schema) -> str:
     raise RuntimeError(f"All Gemini models failed: {last_exc}")
 
 
-def _groq_call(system_prompt: str, user_prompt: str, max_retries: int = 3) -> str:
+def _groq_call(system_prompt: str, user_prompt: str, max_retries: int = 3, max_tokens: int = 8192) -> str:
     if not _GROQ_API_KEY:
         raise RuntimeError("No GROQ_API_KEY")
     client = Groq(api_key=_GROQ_API_KEY)
@@ -288,7 +320,7 @@ def _groq_call(system_prompt: str, user_prompt: str, max_retries: int = 3) -> st
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.7,
-                max_tokens=4096,
+                max_tokens=max_tokens,
             )
             return response.choices[0].message.content
         except Exception as exc:
@@ -558,7 +590,7 @@ async def synthesize_lesson(
             data.pop("estimated_time_minutes", None)
             return data
         except Exception as e:
-            logger.error("Lesson parse failed: %s", e)
+            logger.error("Lesson parse failed: %s\nRaw (first 500 chars): %s", e, (raw or "")[:500])
 
     # Fallback lesson
     return {
