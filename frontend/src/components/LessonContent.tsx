@@ -3,7 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { LessonDetail, LessonSection } from "@/types/course";
+import { LessonDetail, LessonSection, LessonSource } from "@/types/course";
 import VideoEmbed from "./VideoEmbed";
 import QuizWidget from "./QuizWidget";
 
@@ -170,6 +170,94 @@ function SectionCard({ section }: { section: LessonSection }) {
   );
 }
 
+function SourcesSection({ sources }: { sources: LessonSource[] }) {
+  if (!sources || sources.length === 0) return null;
+  return (
+    <div
+      style={{
+        marginTop: "1.5rem",
+        background: "var(--bg-card)",
+        border: "1px solid var(--border)",
+        borderRadius: "12px",
+        padding: "1.25rem 1.5rem",
+      }}
+    >
+      <h3
+        style={{
+          margin: "0 0 0.875rem",
+          fontSize: "0.8rem",
+          fontWeight: 700,
+          color: "var(--text-primary)",
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+        }}
+      >
+        📚 Further Reading
+      </h3>
+      <ul
+        style={{
+          margin: 0,
+          padding: 0,
+          listStyle: "none",
+          display: "flex",
+          flexDirection: "column",
+          gap: "0.75rem",
+        }}
+      >
+        {sources.map((src, i) => (
+          <li key={i}>
+            <a
+              href={src.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display: "block",
+                textDecoration: "none",
+                padding: "0.6rem 0.875rem",
+                background: "var(--bg-secondary)",
+                border: "1px solid var(--border)",
+                borderRadius: "8px",
+                transition: "border-color 0.15s",
+              }}
+              onMouseEnter={e => (e.currentTarget.style.borderColor = "#6366f1")}
+              onMouseLeave={e => (e.currentTarget.style.borderColor = "var(--border)")}
+            >
+              <div
+                style={{
+                  fontSize: "0.9rem",
+                  fontWeight: 600,
+                  color: "#818cf8",
+                  marginBottom: src.snippet ? "0.2rem" : 0,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {src.title}
+              </div>
+              {src.snippet && (
+                <div
+                  style={{
+                    fontSize: "0.8rem",
+                    color: "var(--text-muted)",
+                    lineHeight: 1.5,
+                    display: "-webkit-box",
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: "vertical",
+                    overflow: "hidden",
+                  }}
+                >
+                  {src.snippet}
+                </div>
+              )}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function LessonContent({ lesson }: LessonContentProps) {
   return (
     <div
@@ -228,6 +316,9 @@ export default function LessonContent({ lesson }: LessonContentProps) {
       {lesson.exercises && lesson.exercises.length > 0 && (
         <QuizWidget exercises={lesson.exercises} />
       )}
+
+      {/* Sources */}
+      <SourcesSection sources={lesson.sources ?? []} />
 
       {/* Key takeaways */}
       {lesson.key_takeaways && lesson.key_takeaways.length > 0 && (

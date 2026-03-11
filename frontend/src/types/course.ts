@@ -50,6 +50,13 @@ export const ExerciseSchema = z.object({
 });
 export type Exercise = z.infer<typeof ExerciseSchema>;
 
+export const LessonSourceSchema = z.object({
+  title: z.string(),
+  url: z.string().url(),
+  snippet: z.string().default(''),
+});
+export type LessonSource = z.infer<typeof LessonSourceSchema>;
+
 export const LessonDetailSchema = z.object({
   lesson_id: z.string(),
   lesson_title: z.string(),
@@ -58,6 +65,7 @@ export const LessonDetailSchema = z.object({
   sections: z.array(LessonSectionSchema),
   exercises: z.array(ExerciseSchema),
   key_takeaways: z.array(z.string()),
+  sources: z.array(LessonSourceSchema).default([]),
 });
 export type LessonDetail = z.infer<typeof LessonDetailSchema>;
 

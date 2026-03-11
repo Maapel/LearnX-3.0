@@ -187,6 +187,29 @@ async def generate_lesson(request: LessonGenerateRequest) -> LessonDetail:
     lesson_dict["estimated_time_minutes"] = max(1, math.ceil(total_words / 200))
     logger.info("Calculated reading time: %d min (%d words)", lesson_dict["estimated_time_minutes"], total_words)
 
+    # Inject real sources from search results (non-YouTube only, deduplicated, max 5)
+    YOUTUBE_DOMAINS_SET = set(YOUTUBE_DOMAINS)
+    seen_urls: set[str] = set()
+    sources = []
+    for r in search_results:
+        url = r.get("url", "").strip()
+        title = r.get("title", "").strip()
+        if not url or not title:
+            continue
+        if any(d in url for d in YOUTUBE_DOMAINS_SET):
+            continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        sources.append({
+            "title": title,
+            "url": url,
+            "snippet": r.get("snippet", "")[:200],
+        })
+        if len(sources) >= 5:
+            break
+    lesson_dict["sources"] = sources
+
     try:
         lesson = LessonDetail(**lesson_dict)
     except Exception as exc:

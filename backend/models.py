@@ -88,6 +88,12 @@ class Exercise(BaseModel):
     explanation: str = Field(description="A 1-2 sentence explanation of why the answer is correct")
 
 
+class LessonSource(BaseModel):
+    title: str = Field(description="Title of the source article or page")
+    url: str = Field(description="URL of the source")
+    snippet: str = Field(default="", description="Short excerpt from the source")
+
+
 class LessonDetail(BaseModel):
     lesson_id: str = Field(description="UUID matching the outline's lesson_id")
     lesson_title: str = Field(description="Lesson title (same as outline)")
@@ -111,6 +117,10 @@ class LessonDetail(BaseModel):
     )
     key_takeaways: list[str] = Field(
         description="3-5 bullet points summarizing the most important things to remember"
+    )
+    sources: list[LessonSource] = Field(
+        default_factory=list,
+        description="Source articles used to generate this lesson, for further reading"
     )
 
 
