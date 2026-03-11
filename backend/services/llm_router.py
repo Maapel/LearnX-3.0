@@ -54,17 +54,22 @@ def _strip_json_fences(raw: str) -> str:
 async def generate_search_queries(
     topic: str,
     difficulty: str = "Beginner",
-    num_queries: int = 5,
+    num_queries: int = 2,
 ) -> list[str]:
     """
-    Generate targeted search queries for a learning topic.
+    Generate consolidated search queries for a learning topic.
     Cascade: Groq → Ollama → basic query fallback.
+
+    Intentionally limited to 2 queries max to conserve Tavily API credits.
+    Groq (Llama 3) is used exclusively — fast, near-zero cost, no Gemini calls here.
     """
     system_prompt = (
-        f"You are a curriculum designer. Given a topic and difficulty level, "
-        f"generate exactly {num_queries} specific search queries to find the best learning resources.\n"
+        "You are a curriculum designer. Given a topic and difficulty level, "
+        "generate a MAXIMUM of 2 consolidated, highly-comprehensive search queries "
+        "to find the best learning resources. "
+        "Do NOT generate a query for every sub-topic — combine them intelligently. "
         "Return ONLY a valid JSON array of strings, no other text. "
-        'Example: ["query 1", "query 2"]'
+        'Example: ["comprehensive query 1", "comprehensive query 2"]'
     )
     user_message = f"Topic: {topic}\nDifficulty: {difficulty}"
 

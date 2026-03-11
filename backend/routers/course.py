@@ -42,15 +42,15 @@ async def generate_course(request: CourseGenerateRequest) -> Course:
 
     # ── Step 1: Generate search queries via Groq ──────────────────────────────
     try:
-        queries = await generate_search_queries(topic, difficulty, num_queries=5)
+        queries = await generate_search_queries(topic, difficulty, num_queries=2)
         logger.info("Generated queries: %s", queries)
     except Exception as exc:
         logger.error("Query generation failed: %s", exc)
-        queries = [f"{topic} tutorial", f"learn {topic} {difficulty}"]
+        queries = [f"{topic} {difficulty} tutorial guide", f"learn {topic} comprehensive overview"]
 
     # ── Step 2: Search the web for each query (take first 3 queries) ─────────
     try:
-        search_tasks = [search_web(q, num_results=3) for q in queries[:3]]
+        search_tasks = [search_web(q, num_results=3) for q in queries[:2]]
         search_batches = await asyncio.gather(*search_tasks, return_exceptions=True)
 
         # Flatten + deduplicate by URL
