@@ -67,6 +67,11 @@ _OUTLINE_SCHEMA = genai_types.Schema(
                             properties={
                                 "lesson_id": genai_types.Schema(type=genai_types.Type.STRING),
                                 "lesson_title": genai_types.Schema(type=genai_types.Type.STRING),
+                                "lesson_context": genai_types.Schema(type=genai_types.Type.STRING),
+                                "target_search_queries": genai_types.Schema(
+                                    type=genai_types.Type.ARRAY,
+                                    items=genai_types.Schema(type=genai_types.Type.STRING),
+                                ),
                             },
                         ),
                     ),
@@ -269,13 +274,26 @@ def _llm_cascade(prompt: str, schema: genai_types.Schema, groq_system: str) -> s
 # ---------------------------------------------------------------------------
 
 _OUTLINE_GROQ_SYSTEM = (
-    "You are a curriculum designer. Return ONLY valid JSON. "
+    "You are a curriculum architect. Return ONLY valid JSON. "
     "Generate a course outline with 3-5 modules, each with 2-4 lessons. "
-    "Use real UUID strings for lesson_id fields."
+    "Use real UUID4 strings for lesson_id fields. "
+    "For each lesson, write a lesson_context (1-2 sentences describing exactly what the lesson "
+    "covers and how it flows from the previous lesson) and target_search_queries (1-2 highly "
+    "specific web search queries an expert would use to find precisely the content needed for "
+    "that lesson — not generic, not broad)."
 )
 
-_OUTLINE_PROMPT_TMPL = """Design a structured course outline for: {topic}
+_OUTLINE_PROMPT_TMPL = """You are a curriculum architect designing a complete course outline.
+Act as both a teacher and a search strategist.
+
+Course topic: {topic}
 Difficulty: {difficulty}
+
+For EVERY lesson you must provide:
+1. lesson_id — a real UUID4 string
+2. lesson_title — concise and descriptive
+3. lesson_context — 1-2 sentences: what exactly this lesson covers + how it connects to the previous lesson. This will be injected into the AI prompt when generating lesson content to prevent drift.
+4. target_search_queries — list of 1-2 highly specific search queries. Think like a librarian: what exact phrase would return the perfect resource for THIS lesson? E.g. for a lesson on "useEffect cleanup": ["React useEffect cleanup function tutorial", "useEffect return function memory leak prevention"]
 
 Return a JSON object with this exact structure:
 {{
@@ -286,16 +304,18 @@ Return a JSON object with this exact structure:
     {{
       "module_title": "string",
       "lessons": [
-        {{"lesson_id": "<uuid>", "lesson_title": "string"}},
-        ...
+        {{
+          "lesson_id": "<uuid4>",
+          "lesson_title": "string",
+          "lesson_context": "string",
+          "target_search_queries": ["query1", "query2"]
+        }}
       ]
-    }},
-    ...
+    }}
   ]
 }}
 
-Use real UUID4 strings for lesson_id. Create 3-5 modules with 2-4 lessons each.
-Return ONLY JSON, no explanation."""
+Create 3-5 modules with 2-4 lessons each. Return ONLY JSON."""
 
 
 async def synthesize_outline(topic: str, difficulty: str) -> dict:
@@ -307,16 +327,31 @@ async def synthesize_outline(topic: str, difficulty: str) -> dict:
     if raw:
         try:
             data = _safe_json_loads(_strip_fences(raw))
-            # Ensure all lessons have valid UUIDs
+            # Ensure all lessons have UUIDs and required new fields
             for mod in data.get("modules", []):
                 for lesson in mod.get("lessons", []):
                     if not lesson.get("lesson_id"):
                         lesson["lesson_id"] = str(uuid.uuid4())
+                    if not lesson.get("lesson_context"):
+                        lesson["lesson_context"] = f"This lesson covers {lesson.get('lesson_title', topic)} in the context of {topic}."
+                    if not lesson.get("target_search_queries"):
+                        lesson["target_search_queries"] = [
+                            f"{lesson.get('lesson_title', topic)} tutorial",
+                            f"{lesson.get('lesson_title', topic)} {difficulty} guide",
+                        ]
             return data
         except Exception as e:
             logger.error("Outline parse failed: %s", e)
 
     # Fallback outline
+    def _fallback_lesson(title: str) -> dict:
+        return {
+            "lesson_id": str(uuid.uuid4()),
+            "lesson_title": title,
+            "lesson_context": f"This lesson covers {title} as part of learning {topic}.",
+            "target_search_queries": [f"{title} tutorial", f"{title} {difficulty} explained"],
+        }
+
     return {
         "course_title": f"Introduction to {topic}",
         "difficulty_level": difficulty,
@@ -325,9 +360,9 @@ async def synthesize_outline(topic: str, difficulty: str) -> dict:
             {
                 "module_title": f"Getting Started with {topic}",
                 "lessons": [
-                    {"lesson_id": str(uuid.uuid4()), "lesson_title": f"What is {topic}?"},
-                    {"lesson_id": str(uuid.uuid4()), "lesson_title": f"Core Concepts of {topic}"},
-                    {"lesson_id": str(uuid.uuid4()), "lesson_title": f"Practical {topic} Examples"},
+                    _fallback_lesson(f"What is {topic}?"),
+                    _fallback_lesson(f"Core Concepts of {topic}"),
+                    _fallback_lesson(f"Practical {topic} Examples"),
                 ],
             }
         ],
@@ -340,18 +375,24 @@ async def synthesize_outline(topic: str, difficulty: str) -> dict:
 
 _LESSON_GROQ_SYSTEM = (
     "You are an expert educator. Return ONLY valid JSON. "
+    "You will receive a lesson_context field — treat it as your strict scope. "
+    "Only teach what the context specifies. Ignore scraped material that is off-topic. "
     "concept_summary must be STRICTLY 3-4 sentences — no long paragraphs. "
     "exercises must have correct_answer that EXACTLY matches one of the options strings. "
     "video_url must be null if you are not certain of a real YouTube URL."
 )
 
-_LESSON_PROMPT_TMPL = """Generate a detailed interactive lesson for:
+_LESSON_PROMPT_TMPL = """You are generating a lesson for an online course.
+
+STRICT SCOPE — you must ONLY cover what this context specifies:
+\"\"\"{lesson_context}\"\"\"
+Ignore any scraped material that does not directly support this scope.
 
 Lesson: {lesson_title}
 Course: {course_title}
 Difficulty: {difficulty}
 
-Source material to reference:
+Source material (use only what is relevant to the scope above):
 {context}
 
 Return a JSON object with this EXACT structure:
@@ -360,8 +401,8 @@ Return a JSON object with this EXACT structure:
   "lesson_title": "{lesson_title}",
   "estimated_time_minutes": <integer>,
   "video_url": "<youtube URL or null>",
-  "concept_summary": "<STRICTLY 3-4 punchy sentences. No long text. Core idea only.>",
-  "practical_example": "<markdown code block or real-world example, or null>",
+  "concept_summary": "<STRICTLY 3-4 punchy sentences fulfilling the scope above. No drift.>",
+  "practical_example": "<markdown code block or real-world example scoped to the lesson, or null>",
   "exercises": [
     {{
       "question": "string",
@@ -374,17 +415,18 @@ Return a JSON object with this EXACT structure:
 }}
 
 Rules:
-- concept_summary: EXACTLY 3-4 sentences, punchy, beginner-friendly
-- exercises: generate 2-3 MCQ questions with 3-4 options each
+- concept_summary: EXACTLY 3-4 sentences, on-scope, beginner-friendly
+- exercises: 2-3 MCQ questions testing understanding of THIS lesson's scope only
 - correct_answer must be the EXACT string of one of the options
-- video_url: only a real known YouTube URL, otherwise null
-- practical_example: use fenced code blocks for code, null if N/A
+- video_url: only a real known YouTube URL relevant to this exact scope, otherwise null
+- practical_example: fenced code blocks for code, null if N/A
 Return ONLY JSON."""
 
 
 async def synthesize_lesson(
     lesson_id: str,
     lesson_title: str,
+    lesson_context: str,
     course_title: str,
     difficulty: str,
     search_results: list[dict],
@@ -404,6 +446,7 @@ async def synthesize_lesson(
     prompt = _LESSON_PROMPT_TMPL.format(
         lesson_id=lesson_id,
         lesson_title=lesson_title,
+        lesson_context=lesson_context,
         course_title=course_title,
         difficulty=difficulty,
         context=context,
