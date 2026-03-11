@@ -30,10 +30,6 @@ from google import genai
 from google.genai import types as genai_types
 from groq import Groq
 import httpx
-import sys
-import os as _os
-sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
-from models import Course as _CourseModel
 
 logger = logging.getLogger(__name__)
 
@@ -291,13 +287,57 @@ def _fallback_course(topic: str, difficulty: str) -> dict:
 # ---------------------------------------------------------------------------
 # Gemini synthesis (tries each model in cascade)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Gemini response schema — hand-built to avoid Pydantic's additionalProperties
+# which Gemini's API rejects with INVALID_ARGUMENT.
+# ---------------------------------------------------------------------------
+_GEMINI_RESPONSE_SCHEMA = genai_types.Schema(
+    type=genai_types.Type.OBJECT,
+    properties={
+        "course_title": genai_types.Schema(type=genai_types.Type.STRING),
+        "difficulty_level": genai_types.Schema(
+            type=genai_types.Type.STRING,
+            enum=["Beginner", "Intermediate", "Advanced"],
+        ),
+        "estimated_hours": genai_types.Schema(type=genai_types.Type.NUMBER),
+        "modules": genai_types.Schema(
+            type=genai_types.Type.ARRAY,
+            items=genai_types.Schema(
+                type=genai_types.Type.OBJECT,
+                properties={
+                    "module_title": genai_types.Schema(type=genai_types.Type.STRING),
+                    "module_description": genai_types.Schema(type=genai_types.Type.STRING),
+                    "lessons": genai_types.Schema(
+                        type=genai_types.Type.ARRAY,
+                        items=genai_types.Schema(
+                            type=genai_types.Type.OBJECT,
+                            properties={
+                                "lesson_title": genai_types.Schema(type=genai_types.Type.STRING),
+                                "content_type": genai_types.Schema(
+                                    type=genai_types.Type.STRING,
+                                    enum=["video", "article", "concept_breakdown"],
+                                ),
+                                "source_url": genai_types.Schema(type=genai_types.Type.STRING),
+                                "content_markdown": genai_types.Schema(type=genai_types.Type.STRING),
+                                "key_takeaways": genai_types.Schema(
+                                    type=genai_types.Type.ARRAY,
+                                    items=genai_types.Schema(type=genai_types.Type.STRING),
+                                ),
+                            },
+                        ),
+                    ),
+                },
+            ),
+        ),
+    },
+)
+
+
 def _try_gemini(prompt: str) -> str:
     """
-    Try each Gemini Flash model in order using native structured output.
-
-    Uses response_mime_type="application/json" + response_schema=Course to
-    force valid JSON directly from the model — eliminates hallucination loops
-    and costly parse-retry cycles. Returns raw JSON text or raises.
+    Try each Gemini Flash model with native structured JSON output.
+    Uses a hand-built genai_types.Schema (no additionalProperties) to avoid
+    the INVALID_ARGUMENT error that occurs when passing Pydantic models directly.
     """
     if not _GEMINI_API_KEY:
         raise RuntimeError("No GEMINI_API_KEY")
@@ -314,10 +354,10 @@ def _try_gemini(prompt: str) -> str:
                 config=genai_types.GenerateContentConfig(
                     temperature=0.7,
                     response_mime_type="application/json",
-                    response_schema=_CourseModel,
+                    response_schema=_GEMINI_RESPONSE_SCHEMA,
                 ),
             )
-            logger.info("Gemini %s succeeded (structured output).", model_name)
+            logger.info("Gemini %s succeeded.", model_name)
             return response.text
         except Exception as exc:
             logger.warning("Gemini %s failed: %s", model_name, exc)
