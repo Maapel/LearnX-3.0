@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import os
 from dotenv import load_dotenv
@@ -8,28 +9,43 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../../.env"))
 
 logger = logging.getLogger(__name__)
 
+# High-signal educational domains — avoids wasting credits on low-quality pages
+_EDUCATIONAL_DOMAINS = [
+    "github.com",
+    "medium.com",
+    "freecodecamp.org",
+    "dev.to",
+    "wikipedia.org",
+    "youtube.com",
+    "realpython.com",
+    "docs.python.org",
+    "geeksforgeeks.org",
+    "towardsdatascience.com",
+]
 
-def get_search_queries(topic: str) -> list[str]:
-    """Returns 3 varied search query strings for a given topic."""
-    return [
-        f"{topic} tutorial",
-        f"learn {topic} basics",
-        f"{topic} for beginners",
-    ]
+# In-process search cache: query_hash → list[dict]
+_search_cache: dict[str, list[dict]] = {}
+
+
+def _cache_key(query: str, num_results: int) -> str:
+    return hashlib.md5(f"{query.strip().lower()}:{num_results}".encode()).hexdigest()
 
 
 async def search_web(topic: str, num_results: int = 5) -> list[dict]:
     """
     Search the web for a given topic using the Tavily API.
 
-    Args:
-        topic: The topic to search for.
-        num_results: Number of results to return (default 5).
-
-    Returns:
-        A list of dicts with keys: url, title, snippet.
-        Returns an empty list on failure.
+    Optimizations:
+    - search_depth="basic"  → half the credit cost vs "advanced"
+    - include_raw_content=False → no extra credit charge for full page HTML
+    - include_domains → restricts to high-signal educational sites
+    - In-memory cache → zero API calls for repeated queries within same session
     """
+    cache_key = _cache_key(topic, num_results)
+    if cache_key in _search_cache:
+        logger.info("search_web: cache hit for %r", topic)
+        return _search_cache[cache_key]
+
     try:
         api_key = os.getenv("TAVILY_API_KEY")
         if not api_key:
@@ -43,7 +59,9 @@ async def search_web(topic: str, num_results: int = 5) -> list[dict]:
                 client.search,
                 query=topic,
                 max_results=num_results,
-                search_depth="advanced",
+                search_depth="basic",
+                include_raw_content=False,
+                include_domains=_EDUCATIONAL_DOMAINS,
             )
         except Exception as e:
             logger.error("Error calling Tavily API: %s", e)
@@ -63,6 +81,8 @@ async def search_web(topic: str, num_results: int = 5) -> list[dict]:
                 logger.error("Error parsing search result item: %s", e)
                 continue
 
+        _search_cache[cache_key] = results
+        logger.info("search_web: %d results cached for %r", len(results), topic)
         return results
 
     except Exception as e:
@@ -83,5 +103,10 @@ if __name__ == "__main__":
             print(f"  Title:   {result['title']}")
             print(f"  URL:     {result['url']}")
             print(f"  Snippet: {result['snippet'][:200]}...")
+
+        # Second call should be a cache hit
+        print("\n--- Second call (should hit cache) ---")
+        results2 = await search_web("Python programming")
+        print(f"Got {len(results2)} results (from cache)")
 
     asyncio.run(main())
