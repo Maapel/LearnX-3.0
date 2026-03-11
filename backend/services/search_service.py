@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 # High-signal educational domains — avoids wasting credits on low-quality pages
 _EDUCATIONAL_DOMAINS = [
     "github.com",
-    "medium.com",
     "freecodecamp.org",
     "dev.to",
     "wikipedia.org",
@@ -20,7 +19,10 @@ _EDUCATIONAL_DOMAINS = [
     "realpython.com",
     "docs.python.org",
     "geeksforgeeks.org",
-    "towardsdatascience.com",
+    "arxiv.org",
+    "stackoverflow.com",
+    "developer.mozilla.org",
+    "w3schools.com",
 ]
 
 # In-process search cache: query_hash → list[dict]
