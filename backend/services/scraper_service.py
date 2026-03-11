@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 TIMEOUT = 15  # seconds
 MAX_WORDS = 8000
+MAX_CHARS = 15000  # hard character cap per URL — keeps LLM token usage predictable
 
 HEADERS = {
     "User-Agent": (
@@ -30,7 +31,7 @@ HEADERS = {
 }
 
 # Tags whose entire subtree should be stripped before text extraction
-NOISE_TAGS = ["script", "style", "nav", "header", "footer", "aside", "form", "iframe"]
+NOISE_TAGS = ["script", "style", "nav", "header", "footer", "aside", "form", "iframe", "svg", "noscript", "picture"]
 
 # CSS selectors tried in priority order for main content
 CONTENT_SELECTORS = [
@@ -136,9 +137,10 @@ async def scrape_article(url: str) -> dict:
         title_tag = soup.find("title")
         result["title"] = title_tag.get_text(strip=True) if title_tag else ""
 
-        # Extract and cap content
+        # Extract, cap words, then hard-cap characters
         content = _extract_text(soup)
         content = _cap_words(content)
+        content = content[:MAX_CHARS]
 
         result["content"] = content
         result["word_count"] = len(content.split())
