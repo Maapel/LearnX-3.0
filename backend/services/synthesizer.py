@@ -274,17 +274,30 @@ def _llm_cascade(prompt: str, schema: genai_types.Schema, groq_system: str) -> s
 # ---------------------------------------------------------------------------
 
 _OUTLINE_GROQ_SYSTEM = (
-    "You are a curriculum architect. Return ONLY valid JSON. "
-    "Generate a course outline with 3-5 modules, each with 2-4 lessons. "
+    "You are a Master Curriculum Designer. Return ONLY valid JSON. "
+    "You must group the course into 3 to 5 distinct logical Modules "
+    "(e.g. 'Module 1: The Basics', 'Module 2: Core Mechanics', 'Module 3: Advanced Patterns'). "
+    "Do NOT generate a flat list. Every module must clearly build on the previous one, "
+    "forming a coherent learning progression from foundation to mastery. "
     "Use real UUID4 strings for lesson_id fields. "
-    "For each lesson, write a lesson_context (1-2 sentences describing exactly what the lesson "
-    "covers and how it flows from the previous lesson) and target_search_queries (1-2 highly "
-    "specific web search queries an expert would use to find precisely the content needed for "
-    "that lesson — not generic, not broad)."
+    "For each lesson write a lesson_context (1-2 sentences: exactly what this lesson covers "
+    "and how it flows from the previous lesson) and target_search_queries (1-2 highly specific "
+    "search queries a librarian expert would use to find precisely the right content for that "
+    "lesson — not generic, not broad)."
 )
 
-_OUTLINE_PROMPT_TMPL = """You are a curriculum architect designing a complete course outline.
-Act as both a teacher and a search strategist.
+_OUTLINE_PROMPT_TMPL = """You are a Master Curriculum Designer creating a structured course outline.
+You act as both an expert teacher and a search strategist.
+
+CRITICAL STRUCTURE RULE:
+- Group all lessons into 3 to 5 distinct logical Modules.
+- Module titles must reflect a clear learning progression, e.g.:
+    Module 1: Foundations & Setup
+    Module 2: Core Mechanics
+    Module 3: Intermediate Patterns
+    Module 4: Advanced Techniques
+    Module 5: Real-World Projects
+- Do NOT create a flat list of topics. Each module must build directly on the previous one.
 
 Course topic: {topic}
 Difficulty: {difficulty}
@@ -292,17 +305,17 @@ Difficulty: {difficulty}
 For EVERY lesson you must provide:
 1. lesson_id — a real UUID4 string
 2. lesson_title — concise and descriptive
-3. lesson_context — 1-2 sentences: what exactly this lesson covers + how it connects to the previous lesson. This will be injected into the AI prompt when generating lesson content to prevent drift.
-4. target_search_queries — list of 1-2 highly specific search queries. Think like a librarian: what exact phrase would return the perfect resource for THIS lesson? E.g. for a lesson on "useEffect cleanup": ["React useEffect cleanup function tutorial", "useEffect return function memory leak prevention"]
+3. lesson_context — 1-2 sentences: what exactly this lesson covers + how it connects to the previous lesson. This is injected into the AI content generator to prevent drift.
+4. target_search_queries — 1-2 highly specific search queries. What exact phrase returns the perfect resource for THIS lesson? E.g. for "useEffect cleanup": ["React useEffect cleanup function return tutorial", "prevent memory leaks useEffect React hooks"]
 
-Return a JSON object with this exact structure:
+Return this exact JSON structure:
 {{
   "course_title": "string",
   "difficulty_level": "{difficulty}",
   "estimated_hours": <number>,
   "modules": [
     {{
-      "module_title": "string",
+      "module_title": "Module N: <descriptive title>",
       "lessons": [
         {{
           "lesson_id": "<uuid4>",
