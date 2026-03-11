@@ -130,6 +130,7 @@ _VALID_ESCAPES = set('"\\/bfnrtu')
 
 
 def _fix_invalid_escapes(text: str) -> str:
+    """Replace invalid JSON backslash sequences (e.g. \\p, \\s) with the bare character."""
     result = []
     i = 0
     while i < len(text):
@@ -148,26 +149,84 @@ def _fix_invalid_escapes(text: str) -> str:
     return "".join(result)
 
 
+def _escape_control_chars_in_strings(text: str) -> str:
+    """
+    Walk the JSON character-by-character. When inside a JSON string value,
+    replace raw control characters (newline, carriage-return, tab, and others)
+    with their proper JSON escape sequences instead of stripping them entirely.
+    This fixes the "Invalid control character" error caused by LLMs that emit
+    literal newlines inside multi-line string values.
+    """
+    result: list[str] = []
+    in_string = False
+    escaped = False
+    _ESC_MAP = {'\n': '\\n', '\r': '\\r', '\t': '\\t'}
+
+    for ch in text:
+        if escaped:
+            result.append(ch)
+            escaped = False
+        elif ch == '\\':
+            result.append(ch)
+            escaped = True
+        elif ch == '"':
+            result.append(ch)
+            in_string = not in_string
+        elif in_string and ch in _ESC_MAP:
+            result.append(_ESC_MAP[ch])
+        elif in_string and ord(ch) < 0x20:
+            # Any other unescaped control char inside a string → drop it
+            pass
+        else:
+            result.append(ch)
+
+    return "".join(result)
+
+
 def _safe_json_loads(text: str) -> dict:
+    """
+    Parse JSON robustly through 5 escalating strategies:
+    1. Standard parse (handles clean LLM output)
+    2. Extract first {...} block (strips preamble text)
+    3. Escape raw control chars inside strings (fixes literal newlines in values)
+    4. Fix invalid backslash escapes (fixes \\p, \\s etc.)
+    5. Strip remaining non-printable control chars, then fix escapes
+    """
+    # 1. Standard
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+
+    # Extract outermost {...}
     start = text.find("{")
     end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        snippet = text[start:end + 1]
-        try:
-            return json.loads(snippet)
-        except json.JSONDecodeError:
-            pass
-        try:
-            return json.loads(_fix_invalid_escapes(snippet))
-        except json.JSONDecodeError:
-            pass
-        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', snippet)
-        return json.loads(_fix_invalid_escapes(cleaned))
-    raise ValueError("No JSON object found in response")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("No JSON object found in response")
+
+    snippet = text[start:end + 1]
+
+    # 2. Raw snippet
+    try:
+        return json.loads(snippet)
+    except json.JSONDecodeError:
+        pass
+
+    # 3. Escape control chars inside strings (primary fix for literal newlines)
+    try:
+        return json.loads(_escape_control_chars_in_strings(snippet))
+    except json.JSONDecodeError:
+        pass
+
+    # 4. Fix invalid backslash sequences
+    try:
+        return json.loads(_fix_invalid_escapes(snippet))
+    except json.JSONDecodeError:
+        pass
+
+    # 5. Both fixes combined + strip remaining junk
+    cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', snippet)
+    return json.loads(_fix_invalid_escapes(_escape_control_chars_in_strings(cleaned)))
 
 
 def _strip_fences(text: str) -> str:
