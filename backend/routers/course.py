@@ -15,7 +15,6 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 
 from models import CourseOutline, LessonDetail, OutlineGenerateRequest, LessonGenerateRequest
-from services.llm_router import generate_search_queries
 from services.search_service import search_web
 from services.scraper_service import scrape_article
 from services.youtube_service import get_transcript
@@ -69,13 +68,8 @@ def _is_youtube(url: str) -> bool:
 # Shared sourcing helper
 # ---------------------------------------------------------------------------
 
-async def _source_content(topic: str, difficulty: str) -> tuple[list, list, list]:
-    """Search + scrape + transcripts for a given topic. Returns (search, articles, transcripts)."""
-    try:
-        queries = await generate_search_queries(topic, difficulty, num_queries=2)
-    except Exception:
-        queries = [f"{topic} {difficulty} guide", f"learn {topic} tutorial"]
-
+async def _source_content(queries: list[str], difficulty: str) -> tuple[list, list, list]:
+    """Search + scrape + transcripts using the provided queries. Returns (search, articles, transcripts)."""
     try:
         batches = await asyncio.gather(*[search_web(q, num_results=3) for q in queries[:2]], return_exceptions=True)
         seen: set[str] = set()
@@ -129,7 +123,7 @@ async def generate_outline(request: OutlineGenerateRequest) -> CourseOutline:
         except Exception as e:
             logger.warning("Cached outline invalid (%s) — regenerating", e)
 
-    logger.info("Generating outline: topic=%r, difficulty=%r", topic, difficulty)
+    logger.info("Generating outline: topic=%r, difficulty=%r (includes lesson_context + queries)", topic, difficulty)
     outline_dict = await synthesize_outline(topic, difficulty)
 
     try:
@@ -162,17 +156,21 @@ async def generate_lesson(request: LessonGenerateRequest) -> LessonDetail:
         except Exception as e:
             logger.warning("Cached lesson invalid (%s) — regenerating", e)
 
-    logger.info("Generating lesson: %r (course: %r)", request.lesson_title, request.course_title)
+    logger.info(
+        "Generating lesson: %r | queries: %s",
+        request.lesson_title, request.target_search_queries,
+    )
 
-    # Source content scoped to this specific lesson title
+    # Use the pre-planned queries from the outline instead of guessing
     search_results, articles, transcripts = await _source_content(
-        topic=f"{request.lesson_title} {request.course_title}",
+        queries=request.target_search_queries,
         difficulty=request.difficulty,
     )
 
     lesson_dict = await synthesize_lesson(
         lesson_id=request.lesson_id,
         lesson_title=request.lesson_title,
+        lesson_context=request.lesson_context,
         course_title=request.course_title,
         difficulty=request.difficulty,
         search_results=search_results,
