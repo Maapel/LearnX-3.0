@@ -1,5 +1,39 @@
 # LearnX 3.0 — Progress Tracker
 
+---
+
+## Phase 5: UI Templatization & Rolling (JIT) Generation ✅ COMPLETE
+
+### Schema Split (backend/models.py + frontend/src/types/course.ts)
+- [x] `CourseOutline` — lightweight skeleton: title, difficulty, modules → lessons (lesson_id UUID + title only)
+- [x] `LessonDetail` — interactive payload: concept_summary (3-4 sentences), practical_example, exercises (MCQ), key_takeaways, video_url, estimated_time_minutes
+- [x] `Exercise` — question, options[], correct_answer (must match option exactly), explanation
+- [x] Rich `Field(description=...)` annotations on every field to guide Gemini structured output
+- [x] Removed `content_markdown`, `content_type`, `module_description` from outline
+
+### Rolling Generation Endpoints (backend/routers/course.py + services/synthesizer.py)
+- [x] `POST /api/generate-outline` — fast (<5s) skeleton generation, disk-cached by topic+difficulty
+- [x] `POST /api/generate-lesson` — JIT per-lesson content, sources content scoped to lesson title, disk-cached by lesson_id
+- [x] Cascade: Gemini (structured output) → Groq → Ollama → static fallback (both endpoints)
+- [x] Correct_answer validation: ensures value exactly matches one of the options strings
+
+### Interactive UI Components (frontend/src/components/)
+- [x] `QuizWidget.tsx` — MCQ quiz: click to reveal, green/red correct/incorrect, score tracker
+- [x] `VideoEmbed.tsx` — responsive 16:9 YouTube iframe, handles youtu.be + youtube.com URLs
+
+### Just-In-Time Frontend (CourseViewer, CourseSidebar, LessonContent, page.tsx)
+- [x] `page.tsx` — calls `/api/generate-outline` (fast), shows skeleton to user immediately
+- [x] `CourseViewer.tsx` — renders sidebar from outline instantly; fetches lesson on click with in-memory cache
+- [x] `CourseSidebar.tsx` — ⏳ spinner on loading lesson, ✓ checkmark on visited, progress bar
+- [x] `LessonContent.tsx` — concept card (indigo gradient), code block, QuizWidget, takeaways checklist
+
+### UX Flow
+1. User types topic → outline returns in ~3-5s → sidebar rendered
+2. User clicks lesson → loading skeleton shows → lesson fetches in background (~15-30s first time)
+3. Subsequent clicks on same lesson: instant (cached in memory + disk)
+
+---
+
 ## Phase 1: Environment & Schema Initialization ✅ COMPLETE
 - [x] Monorepo structure: `/backend` + `/frontend`
 - [x] `.env.example` with Groq, Gemini, Tavily, SerpAPI, Ollama keys
