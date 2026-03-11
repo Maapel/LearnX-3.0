@@ -1,7 +1,8 @@
 """
 routers/course.py — LearnX 3.0
-POST /api/generate-course: chains the sourcing engine + AI brain into one endpoint.
-Includes a JSON file-backed course cache to skip the full pipeline on repeat requests.
+Two endpoints for Just-In-Time (rolling) generation:
+  POST /api/generate-outline  — fast skeleton (<5s)
+  POST /api/generate-lesson   — deep per-lesson content on demand
 """
 
 import asyncio
@@ -13,12 +14,12 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from models import Course, CourseGenerateRequest
+from models import CourseOutline, LessonDetail, OutlineGenerateRequest, LessonGenerateRequest
 from services.llm_router import generate_search_queries
 from services.search_service import search_web
 from services.scraper_service import scrape_article
 from services.youtube_service import get_transcript
-from services.synthesizer import synthesize_course
+from services.synthesizer import synthesize_outline, synthesize_lesson
 
 logger = logging.getLogger(__name__)
 
@@ -27,168 +28,163 @@ router = APIRouter(prefix="/api", tags=["course"])
 YOUTUBE_DOMAINS = ("youtube.com", "youtu.be", "www.youtube.com")
 
 # ---------------------------------------------------------------------------
-# Course cache — JSON file on disk so it persists across server restarts
+# Disk cache
 # ---------------------------------------------------------------------------
 _CACHE_DIR = Path(__file__).resolve().parents[1] / ".cache"
 _CACHE_DIR.mkdir(exist_ok=True)
 
 
-def _normalize_intent(topic: str, difficulty: str) -> str:
-    """Lowercase + collapse whitespace for stable cache keys."""
-    topic_clean = re.sub(r"\s+", " ", topic.strip().lower())
-    return f"{topic_clean}::{difficulty.lower()}"
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower())
 
 
-def _cache_path(intent_key: str) -> Path:
-    key_hash = hashlib.md5(intent_key.encode()).hexdigest()
-    return _CACHE_DIR / f"{key_hash}.json"
+def _cache_path(key: str) -> Path:
+    return _CACHE_DIR / f"{hashlib.md5(key.encode()).hexdigest()}.json"
 
 
-def _load_from_cache(intent_key: str) -> dict | None:
-    path = _cache_path(intent_key)
-    if path.exists():
+def _load_cache(key: str) -> dict | None:
+    p = _cache_path(key)
+    if p.exists():
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            logger.info("Course cache HIT for %r", intent_key)
-            return data
-        except Exception as exc:
-            logger.warning("Cache read failed for %r: %s", intent_key, exc)
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("Cache read failed for %r: %s", key, e)
     return None
 
 
-def _save_to_cache(intent_key: str, course_dict: dict) -> None:
-    path = _cache_path(intent_key)
+def _save_cache(key: str, data: dict) -> None:
     try:
-        path.write_text(json.dumps(course_dict, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger.info("Course cached → %s", path.name)
-    except Exception as exc:
-        logger.warning("Cache write failed: %s", exc)
+        _cache_path(key).write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        logger.warning("Cache write failed: %s", e)
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _is_youtube(url: str) -> bool:
-    return any(domain in url for domain in YOUTUBE_DOMAINS)
+    return any(d in url for d in YOUTUBE_DOMAINS)
 
 
 # ---------------------------------------------------------------------------
-# Endpoint
+# Shared sourcing helper
 # ---------------------------------------------------------------------------
 
-@router.post("/generate-course", response_model=Course)
-async def generate_course(request: CourseGenerateRequest) -> Course:
-    """
-    Full pipeline:
-      0. Check course cache — return immediately if this topic+difficulty was generated before
-      1. Use Groq to generate 2 consolidated search queries
-      2. Use Tavily (basic depth, cached) to fetch top URLs
-      3. Concurrently scrape articles + fetch YouTube transcripts
-      4. Use Gemini (structured output) → Groq → Ollama to synthesize a Course JSON
-      5. Cache result and return
-    """
-    topic = request.topic.strip()
-    difficulty = request.difficulty or "Beginner"
-    intent_key = _normalize_intent(topic, difficulty)
-
-    logger.info("Course request: topic=%r, difficulty=%r", topic, difficulty)
-
-    # ── Step 0: Check course cache ────────────────────────────────────────────
-    cached = _load_from_cache(intent_key)
-    if cached:
-        try:
-            return Course(**cached)
-        except Exception as exc:
-            logger.warning("Cached course failed validation (%s) — regenerating.", exc)
-
-    # ── Step 1: Generate search queries via Groq ──────────────────────────────
+async def _source_content(topic: str, difficulty: str) -> tuple[list, list, list]:
+    """Search + scrape + transcripts for a given topic. Returns (search, articles, transcripts)."""
     try:
         queries = await generate_search_queries(topic, difficulty, num_queries=2)
-        logger.info("Generated queries: %s", queries)
-    except Exception as exc:
-        logger.error("Query generation failed: %s", exc)
-        queries = [f"{topic} {difficulty} tutorial guide", f"learn {topic} comprehensive overview"]
+    except Exception:
+        queries = [f"{topic} {difficulty} guide", f"learn {topic} tutorial"]
 
-    # ── Step 2: Search the web (Tavily, basic, cached) ────────────────────────
     try:
-        search_tasks = [search_web(q, num_results=3) for q in queries[:2]]
-        search_batches = await asyncio.gather(*search_tasks, return_exceptions=True)
-
-        seen_urls: set[str] = set()
+        batches = await asyncio.gather(*[search_web(q, num_results=3) for q in queries[:2]], return_exceptions=True)
+        seen: set[str] = set()
         search_results: list[dict] = []
-        for batch in search_batches:
+        for batch in batches:
             if isinstance(batch, Exception):
-                logger.warning("A search batch failed: %s", batch)
                 continue
             for item in batch:
                 url = item.get("url", "")
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
+                if url and url not in seen:
+                    seen.add(url)
                     search_results.append(item)
-
-        logger.info("Collected %d unique search results", len(search_results))
-    except Exception as exc:
-        logger.error("Search step failed entirely: %s", exc)
+    except Exception:
         search_results = []
 
-    if not search_results:
-        raise HTTPException(
-            status_code=502,
-            detail="Could not retrieve any search results. Check TAVILY_API_KEY.",
-        )
+    urls = [r["url"] for r in search_results[:6]]
+    yt_urls = [u for u in urls if _is_youtube(u)]
+    art_urls = [u for u in urls if not _is_youtube(u)]
 
-    # ── Step 3: Concurrently scrape articles + fetch transcripts ──────────────
-    urls = [r["url"] for r in search_results[:6]]  # cap at 6 URLs (down from 8)
-    youtube_urls = [u for u in urls if _is_youtube(u)]
-    article_urls = [u for u in urls if not _is_youtube(u)]
-
-    scrape_tasks = [scrape_article(u) for u in article_urls]
-    transcript_tasks = [get_transcript(u) for u in youtube_urls]
-
-    scrape_results_raw, transcript_results_raw = await asyncio.gather(
-        asyncio.gather(*scrape_tasks, return_exceptions=True),
-        asyncio.gather(*transcript_tasks, return_exceptions=True),
+    scrape_raw, transcript_raw = await asyncio.gather(
+        asyncio.gather(*[scrape_article(u) for u in art_urls], return_exceptions=True),
+        asyncio.gather(*[get_transcript(u) for u in yt_urls], return_exceptions=True),
     )
 
-    scraped_articles = [
-        r for r in scrape_results_raw
-        if not isinstance(r, Exception) and r.get("success")
-    ]
-    transcripts = [
-        r for r in transcript_results_raw
-        if not isinstance(r, Exception) and r.get("success")
-    ]
+    articles = [r for r in scrape_raw if not isinstance(r, Exception) and r.get("success")]
+    transcripts = [r for r in transcript_raw if not isinstance(r, Exception) and r.get("success")]
 
-    logger.info(
-        "Sourcing complete: %d articles scraped, %d transcripts fetched",
-        len(scraped_articles),
-        len(transcripts),
+    return search_results, articles, transcripts
+
+
+# ---------------------------------------------------------------------------
+# POST /api/generate-outline
+# ---------------------------------------------------------------------------
+
+@router.post("/generate-outline", response_model=CourseOutline)
+async def generate_outline(request: OutlineGenerateRequest) -> CourseOutline:
+    """
+    Fast endpoint — returns a CourseOutline (title + module/lesson skeleton).
+    No content, no exercises. Should complete in < 5 seconds.
+    Cached on disk by topic+difficulty.
+    """
+    topic = request.topic.strip()
+    difficulty = request.difficulty or "Beginner"
+    cache_key = f"outline::{_normalize(topic)}::{difficulty.lower()}"
+
+    cached = _load_cache(cache_key)
+    if cached:
+        logger.info("Outline cache HIT: %r", topic)
+        try:
+            return CourseOutline(**cached)
+        except Exception as e:
+            logger.warning("Cached outline invalid (%s) — regenerating", e)
+
+    logger.info("Generating outline: topic=%r, difficulty=%r", topic, difficulty)
+    outline_dict = await synthesize_outline(topic, difficulty)
+
+    try:
+        outline = CourseOutline(**outline_dict)
+    except Exception as exc:
+        logger.error("Outline validation failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Outline validation failed: {exc}")
+
+    _save_cache(cache_key, outline_dict)
+    return outline
+
+
+# ---------------------------------------------------------------------------
+# POST /api/generate-lesson
+# ---------------------------------------------------------------------------
+
+@router.post("/generate-lesson", response_model=LessonDetail)
+async def generate_lesson(request: LessonGenerateRequest) -> LessonDetail:
+    """
+    JIT endpoint — generates rich interactive content for a single lesson.
+    Runs sourcing (search + scrape) scoped to the specific lesson topic.
+    Cached on disk by lesson_id.
+    """
+    cache_key = f"lesson::{request.lesson_id}"
+    cached = _load_cache(cache_key)
+    if cached:
+        logger.info("Lesson cache HIT: %r", request.lesson_title)
+        try:
+            return LessonDetail(**cached)
+        except Exception as e:
+            logger.warning("Cached lesson invalid (%s) — regenerating", e)
+
+    logger.info("Generating lesson: %r (course: %r)", request.lesson_title, request.course_title)
+
+    # Source content scoped to this specific lesson title
+    search_results, articles, transcripts = await _source_content(
+        topic=f"{request.lesson_title} {request.course_title}",
+        difficulty=request.difficulty,
     )
 
-    # ── Step 4: Synthesize (Gemini structured → Groq → Ollama) ───────────────
-    try:
-        course_dict = await synthesize_course(
-            topic=topic,
-            difficulty=difficulty,
-            search_results=search_results,
-            scraped_articles=scraped_articles,
-            transcripts=transcripts,
-        )
-    except Exception as exc:
-        logger.error("Synthesis failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Course synthesis failed: {exc}")
+    lesson_dict = await synthesize_lesson(
+        lesson_id=request.lesson_id,
+        lesson_title=request.lesson_title,
+        course_title=request.course_title,
+        difficulty=request.difficulty,
+        search_results=search_results,
+        scraped_articles=articles,
+        transcripts=transcripts,
+    )
 
-    # ── Step 5: Validate, cache, return ──────────────────────────────────────
     try:
-        course = Course(**course_dict)
+        lesson = LessonDetail(**lesson_dict)
     except Exception as exc:
-        logger.error("Course schema validation failed: %s\nDict: %s", exc, course_dict)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Generated course failed schema validation: {exc}",
-        )
+        logger.error("Lesson validation failed: %s\nDict: %s", exc, lesson_dict)
+        raise HTTPException(status_code=500, detail=f"Lesson validation failed: {exc}")
 
-    _save_to_cache(intent_key, course_dict)
-    logger.info("Course generated successfully: %r", course.course_title)
-    return course
+    _save_cache(cache_key, lesson_dict)
+    return lesson
