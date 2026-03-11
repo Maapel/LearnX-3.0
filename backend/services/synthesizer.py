@@ -30,6 +30,10 @@ from google import genai
 from google.genai import types as genai_types
 from groq import Groq
 import httpx
+import sys
+import os as _os
+sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
+from models import Course as _CourseModel
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +46,8 @@ _OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "llama3.2")
 # Prevents Groq free-tier quota exhaustion under concurrent FastAPI requests.
 _llm_semaphore = asyncio.Semaphore(1)
 
-# Gemini model cascade — use full model path as required by google-genai v1 SDK
+# Gemini model cascade — Flash tier only (cheaper, faster, great at structured data)
+# Never use Pro tier for standard synthesis — Flash is an order of magnitude cheaper
 _GEMINI_MODELS = ["models/gemini-2.0-flash-lite", "models/gemini-2.0-flash"]
 _GROQ_MODEL    = "llama-3.3-70b-versatile"
 
@@ -287,7 +292,13 @@ def _fallback_course(topic: str, difficulty: str) -> dict:
 # Gemini synthesis (tries each model in cascade)
 # ---------------------------------------------------------------------------
 def _try_gemini(prompt: str) -> str:
-    """Try each Gemini model in order. Returns raw text or raises."""
+    """
+    Try each Gemini Flash model in order using native structured output.
+
+    Uses response_mime_type="application/json" + response_schema=Course to
+    force valid JSON directly from the model — eliminates hallucination loops
+    and costly parse-retry cycles. Returns raw JSON text or raises.
+    """
     if not _GEMINI_API_KEY:
         raise RuntimeError("No GEMINI_API_KEY")
 
@@ -296,13 +307,17 @@ def _try_gemini(prompt: str) -> str:
 
     for model_name in _GEMINI_MODELS:
         try:
-            logger.info("Trying Gemini model: %s", model_name)
+            logger.info("Trying Gemini model: %s (structured output)", model_name)
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
-                config=genai_types.GenerateContentConfig(temperature=0.7),
+                config=genai_types.GenerateContentConfig(
+                    temperature=0.7,
+                    response_mime_type="application/json",
+                    response_schema=_CourseModel,
+                ),
             )
-            logger.info("Gemini %s succeeded.", model_name)
+            logger.info("Gemini %s succeeded (structured output).", model_name)
             return response.text
         except Exception as exc:
             logger.warning("Gemini %s failed: %s", model_name, exc)
