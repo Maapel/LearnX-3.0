@@ -86,10 +86,19 @@ _LESSON_SCHEMA = genai_types.Schema(
     properties={
         "lesson_id": genai_types.Schema(type=genai_types.Type.STRING),
         "lesson_title": genai_types.Schema(type=genai_types.Type.STRING),
-        "estimated_time_minutes": genai_types.Schema(type=genai_types.Type.INTEGER),
         "video_url": genai_types.Schema(type=genai_types.Type.STRING),
-        "concept_summary": genai_types.Schema(type=genai_types.Type.STRING),
-        "practical_example": genai_types.Schema(type=genai_types.Type.STRING),
+        "sections": genai_types.Schema(
+            type=genai_types.Type.ARRAY,
+            items=genai_types.Schema(
+                type=genai_types.Type.OBJECT,
+                properties={
+                    "section_title": genai_types.Schema(type=genai_types.Type.STRING),
+                    "explanation": genai_types.Schema(type=genai_types.Type.STRING),
+                    "code_snippet": genai_types.Schema(type=genai_types.Type.STRING),
+                    "visual_analogy": genai_types.Schema(type=genai_types.Type.STRING),
+                },
+            ),
+        ),
         "exercises": genai_types.Schema(
             type=genai_types.Type.ARRAY,
             items=genai_types.Schema(
@@ -387,15 +396,17 @@ async def synthesize_outline(topic: str, difficulty: str) -> dict:
 # ---------------------------------------------------------------------------
 
 _LESSON_GROQ_SYSTEM = (
-    "You are an expert educator. Return ONLY valid JSON. "
-    "You will receive a lesson_context field — treat it as your strict scope. "
-    "Only teach what the context specifies. Ignore scraped material that is off-topic. "
-    "concept_summary must be STRICTLY 3-4 sentences — no long paragraphs. "
+    "You are an expert educator writing a deep, structured lesson. Return ONLY valid JSON. "
+    "You will receive a lesson_context — treat it as your strict scope. "
+    "Write 3-5 sections, each with a specific title, detailed explanation (1-3 paragraphs with "
+    "markdown formatting: **bold** key terms, bullet lists), an optional code_snippet (fenced "
+    "code block), and an optional visual_analogy (one sentence). "
+    "Do NOT write a single monolithic text block. Chunk the content into clearly titled sections. "
     "exercises must have correct_answer that EXACTLY matches one of the options strings. "
     "video_url must be null if you are not certain of a real YouTube URL."
 )
 
-_LESSON_PROMPT_TMPL = """You are generating a lesson for an online course.
+_LESSON_PROMPT_TMPL = """You are generating a deep, structured lesson for an online course.
 
 STRICT SCOPE — you must ONLY cover what this context specifies:
 \"\"\"{lesson_context}\"\"\"
@@ -412,28 +423,35 @@ Return a JSON object with this EXACT structure:
 {{
   "lesson_id": "{lesson_id}",
   "lesson_title": "{lesson_title}",
-  "estimated_time_minutes": <integer>,
-  "video_url": "<youtube URL or null>",
-  "concept_summary": "<STRICTLY 3-4 punchy sentences fulfilling the scope above. No drift.>",
-  "practical_example": "<markdown code block or real-world example scoped to the lesson, or null>",
+  "video_url": "<real youtube URL or null>",
+  "sections": [
+    {{
+      "section_title": "<specific heading, not generic>",
+      "explanation": "<1-3 paragraphs with **bold** key terms and bullet points. Be thorough.>",
+      "code_snippet": "<fenced code block with language tag, or null>",
+      "visual_analogy": "<one sentence real-world analogy, or null>"
+    }}
+  ],
   "exercises": [
     {{
       "question": "string",
-      "options": ["A", "B", "C", "D"],
-      "correct_answer": "<must exactly match one option>",
-      "explanation": "1-2 sentences why this is correct"
+      "options": ["option A", "option B", "option C", "option D"],
+      "correct_answer": "<must exactly match one of the options strings above>",
+      "explanation": "1-2 sentences why this answer is correct"
     }}
   ],
   "key_takeaways": ["string", ...]
 }}
 
-Rules:
-- concept_summary: EXACTLY 3-4 sentences, on-scope, beginner-friendly
-- exercises: 2-3 MCQ questions testing understanding of THIS lesson's scope only
-- correct_answer must be the EXACT string of one of the options
-- video_url: only a real known YouTube URL relevant to this exact scope, otherwise null
-- practical_example: fenced code blocks for code, null if N/A
-Return ONLY JSON."""
+RULES — violating any rule makes the output invalid:
+1. sections: generate 3-5 sections covering different aspects of the lesson scope
+2. Each section explanation: 1-3 paragraphs, use **bold** for key terms, use bullet lists where appropriate — NO single-sentence explanations
+3. code_snippet: must use fenced markdown code blocks with a language tag (```python, ```js etc). Null if not applicable.
+4. visual_analogy: one sentence only. Real-world comparison. Null if forced.
+5. exercises: 2-3 MCQ questions, each with 3-4 options
+6. correct_answer must be the EXACT string of one of the options (copy-paste it)
+7. video_url: only a confirmed real YouTube URL for this exact topic, otherwise null
+Return ONLY JSON, no explanation."""
 
 
 async def synthesize_lesson(
@@ -477,6 +495,8 @@ async def synthesize_lesson(
                 if ex.get("correct_answer") not in ex.get("options", []):
                     opts = ex.get("options", [])
                     ex["correct_answer"] = opts[0] if opts else ex["correct_answer"]
+            # Remove LLM-hallucinated time — router calculates it programmatically
+            data.pop("estimated_time_minutes", None)
             return data
         except Exception as e:
             logger.error("Lesson parse failed: %s", e)
@@ -485,15 +505,23 @@ async def synthesize_lesson(
     return {
         "lesson_id": lesson_id,
         "lesson_title": lesson_title,
-        "estimated_time_minutes": 10,
         "video_url": None,
-        "concept_summary": (
-            f"{lesson_title} is a key topic in {course_title}. "
-            "This lesson covers the fundamental concepts you need to understand. "
-            "Study the source material carefully to build a solid foundation. "
-            "Practice regularly to reinforce your understanding."
-        ),
-        "practical_example": None,
+        "sections": [
+            {
+                "section_title": f"Introduction to {lesson_title}",
+                "explanation": (
+                    f"**{lesson_title}** is a fundamental concept in {course_title}.\n\n"
+                    "This lesson covers the core ideas you need to understand before moving forward. "
+                    "All AI synthesis providers failed — please check your API keys and retry.\n\n"
+                    "Key areas this lesson would cover:\n"
+                    f"- The definition and purpose of {lesson_title}\n"
+                    "- How it fits into the broader course structure\n"
+                    "- Common use cases and practical applications"
+                ),
+                "code_snippet": None,
+                "visual_analogy": None,
+            }
+        ],
         "exercises": [
             {
                 "question": f"What is the primary purpose of {lesson_title}?",
