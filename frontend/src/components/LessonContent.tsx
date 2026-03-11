@@ -1,197 +1,201 @@
 "use client";
 
-import ReactMarkdown from "react-markdown";
+import { LessonDetail } from "@/types/course";
+import VideoEmbed from "./VideoEmbed";
+import QuizWidget from "./QuizWidget";
 import SyntaxHighlighter from "react-syntax-highlighter/dist/esm/prism";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { Lesson, ContentType } from "@/types/course";
 
 interface LessonContentProps {
-  lesson: Lesson;
+  lesson: LessonDetail;
 }
 
-function getYouTubeVideoId(url: string): string | null {
-  try {
-    const parsed = new URL(url);
-    if (parsed.hostname === "youtu.be") {
-      return parsed.pathname.slice(1).split("?")[0] || null;
+function extractCodeBlocks(text: string): { type: "text" | "code"; lang: string; content: string }[] {
+  const parts: { type: "text" | "code"; lang: string; content: string }[] = [];
+  const regex = /```(\w*)\n([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ type: "text", lang: "", content: text.slice(lastIndex, match.index) });
     }
-    if (
-      parsed.hostname === "www.youtube.com" ||
-      parsed.hostname === "youtube.com"
-    ) {
-      return parsed.searchParams.get("v");
-    }
-  } catch {
-    // invalid URL
+    parts.push({ type: "code", lang: match[1] || "text", content: match[2] });
+    lastIndex = match.index + match[0].length;
   }
-  return null;
-}
-
-function contentTypeBadgeStyle(type: ContentType): React.CSSProperties {
-  const base: React.CSSProperties = {
-    display: "inline-block",
-    padding: "0.2em 0.65em",
-    borderRadius: "999px",
-    fontSize: "0.75rem",
-    fontWeight: 600,
-    letterSpacing: "0.02em",
-    textTransform: "uppercase",
-  };
-  if (type === "video") {
-    return { ...base, background: "#581c87", color: "#e9d5ff" };
+  if (lastIndex < text.length) {
+    parts.push({ type: "text", lang: "", content: text.slice(lastIndex) });
   }
-  if (type === "article") {
-    return { ...base, background: "#1e3a5f", color: "#bfdbfe" };
-  }
-  // concept_breakdown
-  return { ...base, background: "#2e1065", color: "#ddd6fe" };
+  return parts;
 }
 
 export default function LessonContent({ lesson }: LessonContentProps) {
-  const isYouTube =
-    lesson.content_type === "video" &&
-    lesson.source_url &&
-    (lesson.source_url.includes("youtube.com") ||
-      lesson.source_url.includes("youtu.be"));
-
-  const videoId = isYouTube && lesson.source_url
-    ? getYouTubeVideoId(lesson.source_url)
-    : null;
+  const exampleParts = lesson.practical_example
+    ? extractCodeBlocks(lesson.practical_example)
+    : [];
 
   return (
     <div
       style={{
-        maxWidth: "860px",
+        maxWidth: "780px",
         margin: "0 auto",
         padding: "2rem 2rem 4rem",
+        display: "flex",
+        flexDirection: "column",
+        gap: "0",
       }}
     >
-      {/* Header */}
+      {/* ── Header ── */}
       <div style={{ marginBottom: "1.5rem" }}>
         <h1
           style={{
-            margin: "0 0 0.75rem",
+            margin: "0 0 0.5rem",
             fontSize: "1.75rem",
             fontWeight: 700,
             color: "var(--text-primary)",
-            lineHeight: 1.3,
+            lineHeight: 1.25,
           }}
         >
           {lesson.lesson_title}
         </h1>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
-          <span style={contentTypeBadgeStyle(lesson.content_type)}>
-            {lesson.content_type === "video"
-              ? "▶ Video"
-              : lesson.content_type === "article"
-              ? "📄 Article"
-              : "💡 Concept"}
-          </span>
-          {lesson.source_url && (
-            <a
-              href={lesson.source_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                color: "var(--accent-light)",
-                fontSize: "0.875rem",
-                textDecoration: "none",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "0.25rem",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.textDecoration = "underline";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.textDecoration = "none";
-              }}
-            >
-              View Source →
-            </a>
-          )}
-        </div>
-      </div>
-
-      {/* YouTube embed */}
-      {videoId && (
-        <div
+        <span
           style={{
-            position: "relative",
-            paddingBottom: "56.25%",
-            height: 0,
-            overflow: "hidden",
-            borderRadius: "8px",
-            marginBottom: "1.5rem",
-            maxHeight: "400px",
-            background: "#000",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "0.35rem",
+            fontSize: "0.78rem",
+            fontWeight: 600,
+            color: "var(--text-muted)",
+            background: "var(--bg-hover)",
+            border: "1px solid var(--border)",
+            borderRadius: "999px",
+            padding: "0.2em 0.75em",
           }}
         >
-          <iframe
-            src={`https://www.youtube.com/embed/${videoId}`}
-            title={lesson.lesson_title}
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-            allowFullScreen
+          ⏱ {lesson.estimated_time_minutes} min
+        </span>
+      </div>
+
+      {/* ── Video ── */}
+      {lesson.video_url && (
+        <VideoEmbed url={lesson.video_url} title={lesson.lesson_title} />
+      )}
+
+      {/* ── Concept Summary ── */}
+      <div
+        style={{
+          background: "linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)",
+          border: "1px solid #4338ca55",
+          borderRadius: "12px",
+          padding: "1.5rem",
+          marginBottom: "1.5rem",
+        }}
+      >
+        <p
+          style={{
+            margin: "0 0 0.5rem",
+            fontSize: "0.72rem",
+            fontWeight: 700,
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+            color: "#a5b4fc",
+          }}
+        >
+          💡 Core Concept
+        </p>
+        <p
+          style={{
+            margin: 0,
+            fontSize: "1.1rem",
+            lineHeight: 1.75,
+            color: "#e0e7ff",
+            fontWeight: 400,
+          }}
+        >
+          {lesson.concept_summary}
+        </p>
+      </div>
+
+      {/* ── Practical Example ── */}
+      {lesson.practical_example && exampleParts.length > 0 && (
+        <div
+          style={{
+            borderRadius: "12px",
+            overflow: "hidden",
+            border: "1px solid var(--border)",
+            marginBottom: "1.5rem",
+          }}
+        >
+          <div
             style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              width: "100%",
-              height: "100%",
-              border: "none",
-              borderRadius: "8px",
+              padding: "0.6rem 1rem",
+              background: "#161b22",
+              borderBottom: "1px solid var(--border)",
+              fontSize: "0.75rem",
+              fontWeight: 600,
+              color: "#7d8590",
+              letterSpacing: "0.05em",
+              textTransform: "uppercase",
             }}
-          />
+          >
+            🔧 Practical Example
+          </div>
+          <div style={{ background: "var(--code-bg)" }}>
+            {exampleParts.map((part, i) =>
+              part.type === "code" ? (
+                <SyntaxHighlighter
+                  key={i}
+                  style={oneDark as Record<string, React.CSSProperties>}
+                  language={part.lang}
+                  PreTag="div"
+                  customStyle={{ margin: 0, borderRadius: 0, fontSize: "0.875rem" }}
+                >
+                  {part.content.trim()}
+                </SyntaxHighlighter>
+              ) : (
+                part.content.trim() ? (
+                  <p
+                    key={i}
+                    style={{
+                      margin: 0,
+                      padding: "0.75rem 1rem",
+                      color: "var(--text-secondary)",
+                      fontSize: "0.9rem",
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    {part.content.trim()}
+                  </p>
+                ) : null
+              )
+            )}
+          </div>
         </div>
       )}
 
-      {/* Markdown content */}
-      <div className="prose">
-        <ReactMarkdown
-          components={{
-            code({ className, children, ...props }) {
-              const match = /language-(\w+)/.exec(className || "");
-              const isBlock = match !== null;
-              if (isBlock) {
-                return (
-                  <SyntaxHighlighter
-                    style={oneDark as Record<string, React.CSSProperties>}
-                    language={match[1]}
-                    PreTag="div"
-                  >
-                    {String(children).replace(/\n$/, "")}
-                  </SyntaxHighlighter>
-                );
-              }
-              return (
-                <code className={className} {...props}>
-                  {children}
-                </code>
-              );
-            },
-          }}
-        >
-          {lesson.content_markdown}
-        </ReactMarkdown>
-      </div>
+      {/* ── Quiz ── */}
+      {lesson.exercises && lesson.exercises.length > 0 && (
+        <QuizWidget exercises={lesson.exercises} />
+      )}
 
-      {/* Key Takeaways */}
+      {/* ── Key Takeaways ── */}
       {lesson.key_takeaways && lesson.key_takeaways.length > 0 && (
         <div
           style={{
             marginTop: "2rem",
             background: "var(--bg-card)",
             border: "1px solid var(--border)",
-            borderRadius: "10px",
+            borderRadius: "12px",
             padding: "1.25rem 1.5rem",
           }}
         >
           <h3
             style={{
-              margin: "0 0 0.75rem",
-              fontSize: "1rem",
+              margin: "0 0 0.875rem",
+              fontSize: "0.875rem",
               fontWeight: 700,
               color: "var(--text-primary)",
+              letterSpacing: "0.05em",
+              textTransform: "uppercase",
             }}
           >
             🎯 Key Takeaways
@@ -203,23 +207,41 @@ export default function LessonContent({ lesson }: LessonContentProps) {
               listStyle: "none",
               display: "flex",
               flexDirection: "column",
-              gap: "0.5rem",
+              gap: "0.6rem",
             }}
           >
-            {lesson.key_takeaways.map((takeaway, i) => (
+            {lesson.key_takeaways.map((t, i) => (
               <li
                 key={i}
                 style={{
                   display: "flex",
                   alignItems: "flex-start",
-                  gap: "0.5rem",
+                  gap: "0.6rem",
                   color: "var(--text-secondary)",
                   fontSize: "0.9375rem",
-                  lineHeight: 1.6,
+                  lineHeight: 1.55,
                 }}
               >
-                <span style={{ flexShrink: 0 }}>✅</span>
-                <span>{takeaway}</span>
+                <span
+                  style={{
+                    flexShrink: 0,
+                    marginTop: "2px",
+                    width: "18px",
+                    height: "18px",
+                    borderRadius: "50%",
+                    background: "#14532d",
+                    border: "1px solid #22c55e44",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: "0.65rem",
+                    color: "#86efac",
+                    fontWeight: 700,
+                  }}
+                >
+                  ✓
+                </span>
+                <span>{t}</span>
               </li>
             ))}
           </ul>

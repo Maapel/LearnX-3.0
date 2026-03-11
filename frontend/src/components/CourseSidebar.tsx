@@ -1,19 +1,14 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Course, ContentType } from "@/types/course";
+import { useState } from "react";
+import { CourseOutline } from "@/types/course";
 
 interface CourseSidebarProps {
-  course: Course;
-  activeModuleIndex: number;
-  activeLessonIndex: number;
+  outline: CourseOutline;
+  activeLesson: { moduleIdx: number; lessonIdx: number } | null;
+  loadingLessonId: string | null;
+  visitedLessonIds: Set<string>;
   onSelectLesson: (moduleIdx: number, lessonIdx: number) => void;
-}
-
-function contentTypeIcon(type: ContentType): string {
-  if (type === "video") return "▶";
-  if (type === "article") return "📄";
-  return "💡";
 }
 
 function difficultyColor(level: string): string {
@@ -23,34 +18,18 @@ function difficultyColor(level: string): string {
 }
 
 export default function CourseSidebar({
-  course,
-  activeModuleIndex,
-  activeLessonIndex,
+  outline,
+  activeLesson,
+  loadingLessonId,
+  visitedLessonIds,
   onSelectLesson,
 }: CourseSidebarProps) {
   const [expandedModules, setExpandedModules] = useState<boolean[]>(() =>
-    course.modules.map(() => true)
+    outline.modules.map(() => true)
   );
 
-  // Track visited lessons as "moduleIdx-lessonIdx" strings
-  const [visitedLessons, setVisitedLessons] = useState<Set<string>>(
-    () => new Set([`${activeModuleIndex}-${activeLessonIndex}`])
-  );
-
-  useEffect(() => {
-    setVisitedLessons((prev) => {
-      const next = new Set(prev);
-      next.add(`${activeModuleIndex}-${activeLessonIndex}`);
-      return next;
-    });
-  }, [activeModuleIndex, activeLessonIndex]);
-
-  // Compute total lessons and visited count for progress bar
-  const totalLessons = course.modules.reduce(
-    (sum, mod) => sum + mod.lessons.length,
-    0
-  );
-  const visitedCount = visitedLessons.size;
+  const totalLessons = outline.modules.reduce((sum, m) => sum + m.lessons.length, 0);
+  const visitedCount = visitedLessonIds.size;
   const progressPct = totalLessons > 0 ? (visitedCount / totalLessons) * 100 : 0;
 
   function toggleModule(idx: number) {
@@ -74,15 +53,10 @@ export default function CourseSidebar({
         flexDirection: "column",
       }}
     >
-      {/* Course info header */}
-      <div
-        style={{
-          padding: "1.25rem 1rem 1rem",
-          borderBottom: "1px solid var(--border)",
-        }}
-      >
+      {/* Course header */}
+      <div style={{ padding: "1.25rem 1rem 1rem", borderBottom: "1px solid var(--border)" }}>
         <p
-          title={course.course_title}
+          title={outline.course_title}
           style={{
             margin: "0 0 0.5rem",
             fontWeight: 700,
@@ -93,7 +67,7 @@ export default function CourseSidebar({
             whiteSpace: "nowrap",
           }}
         >
-          {course.course_title}
+          {outline.course_title}
         </p>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
           <span
@@ -103,30 +77,24 @@ export default function CourseSidebar({
               padding: "0.15em 0.55em",
               borderRadius: "999px",
               background: "var(--bg-hover)",
-              color: difficultyColor(course.difficulty_level),
-              border: `1px solid ${difficultyColor(course.difficulty_level)}44`,
+              color: difficultyColor(outline.difficulty_level),
+              border: `1px solid ${difficultyColor(outline.difficulty_level)}44`,
             }}
           >
-            {course.difficulty_level}
+            {outline.difficulty_level}
           </span>
-          <span
-            style={{
-              fontSize: "0.75rem",
-              color: "var(--text-muted)",
-            }}
-          >
-            ⏱ {course.estimated_hours}h
+          <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+            ⏱ {outline.estimated_hours}h
           </span>
         </div>
       </div>
 
-      {/* Module / lesson list */}
+      {/* Module list */}
       <div style={{ flex: 1, overflowY: "auto", padding: "0.5rem 0" }}>
-        {course.modules.map((mod, modIdx) => {
+        {outline.modules.map((mod, modIdx) => {
           const isExpanded = expandedModules[modIdx];
           return (
             <div key={modIdx}>
-              {/* Module header */}
               <button
                 onClick={() => toggleModule(modIdx)}
                 style={{
@@ -143,12 +111,8 @@ export default function CourseSidebar({
                   fontFamily: "inherit",
                   gap: "0.5rem",
                 }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "var(--bg-hover)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "none";
-                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
               >
                 <span
                   style={{
@@ -176,14 +140,13 @@ export default function CourseSidebar({
                 </span>
               </button>
 
-              {/* Lessons */}
               {isExpanded && (
                 <div>
                   {mod.lessons.map((lesson, lesIdx) => {
                     const isActive =
-                      modIdx === activeModuleIndex && lesIdx === activeLessonIndex;
-                    const key = `${modIdx}-${lesIdx}`;
-                    const isVisited = visitedLessons.has(key) && !isActive;
+                      activeLesson?.moduleIdx === modIdx && activeLesson?.lessonIdx === lesIdx;
+                    const isLoading = loadingLessonId === lesson.lesson_id;
+                    const isVisited = visitedLessonIds.has(lesson.lesson_id) && !isActive;
 
                     return (
                       <button
@@ -195,9 +158,7 @@ export default function CourseSidebar({
                           gap: "0.5rem",
                           width: "100%",
                           padding: "0.5rem 1rem 0.5rem 1.75rem",
-                          background: isActive
-                            ? "var(--accent)"
-                            : "none",
+                          background: isActive ? "var(--accent)" : "none",
                           border: "none",
                           cursor: "pointer",
                           textAlign: "left",
@@ -206,16 +167,14 @@ export default function CourseSidebar({
                           transition: "background 0.15s",
                         }}
                         onMouseEnter={(e) => {
-                          if (!isActive)
-                            e.currentTarget.style.background = "var(--bg-hover)";
+                          if (!isActive) e.currentTarget.style.background = "var(--bg-hover)";
                         }}
                         onMouseLeave={(e) => {
-                          if (!isActive)
-                            e.currentTarget.style.background = "none";
+                          if (!isActive) e.currentTarget.style.background = "none";
                         }}
                       >
                         <span style={{ fontSize: "0.75rem", flexShrink: 0 }}>
-                          {contentTypeIcon(lesson.content_type)}
+                          {isLoading ? "⏳" : isVisited ? "✓" : "○"}
                         </span>
                         <span
                           style={{
@@ -230,17 +189,6 @@ export default function CourseSidebar({
                         >
                           {lesson.lesson_title}
                         </span>
-                        {isVisited && (
-                          <span
-                            style={{
-                              fontSize: "0.7rem",
-                              color: isActive ? "#fff" : "#22c55e",
-                              flexShrink: 0,
-                            }}
-                          >
-                            ✓
-                          </span>
-                        )}
                       </button>
                     );
                   })}
@@ -259,17 +207,8 @@ export default function CourseSidebar({
           background: "var(--bg-secondary)",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: "0.4rem",
-          }}
-        >
-          <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
-            Progress
-          </span>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.4rem" }}>
+          <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>Progress</span>
           <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
             {visitedCount}/{totalLessons}
           </span>

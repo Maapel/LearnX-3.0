@@ -4,25 +4,25 @@ import { useState } from "react";
 import PromptInput from "@/components/PromptInput";
 import LoadingSkeleton from "@/components/LoadingSkeleton";
 import CourseViewer from "@/components/CourseViewer";
-import { Course } from "@/types/course";
-import { generateCourse } from "@/lib/api";
+import { CourseOutline } from "@/types/course";
+import { generateOutline } from "@/lib/api";
 
 type AppState = "input" | "loading" | "course" | "error";
 
 export default function Home() {
   const [state, setState] = useState<AppState>("input");
-  const [course, setCourse] = useState<Course | null>(null);
+  const [outline, setOutline] = useState<CourseOutline | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function handleGenerate(topic: string, difficulty: string) {
     setState("loading");
     setError(null);
     try {
-      const result = await generateCourse({
+      const result = await generateOutline({
         topic,
-        difficulty: difficulty as Course["difficulty_level"],
+        difficulty: difficulty as CourseOutline["difficulty_level"],
       });
-      setCourse(result);
+      setOutline(result);
       setState("course");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Course generation failed. Please try again.");
@@ -31,13 +31,13 @@ export default function Home() {
   }
 
   function handleReset() {
-    setCourse(null);
+    setOutline(null);
     setError(null);
     setState("input");
   }
 
   if (state === "loading") return <LoadingSkeleton />;
-  if (state === "course" && course) return <CourseViewer course={course} onReset={handleReset} />;
+  if (state === "course" && outline) return <CourseViewer outline={outline} onReset={handleReset} />;
 
   return (
     <div>

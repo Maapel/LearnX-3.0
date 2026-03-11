@@ -1,55 +1,74 @@
 "use client";
 
-import { useState } from "react";
-import { Course } from "@/types/course";
+import { useState, useCallback } from "react";
+import { CourseOutline, LessonDetail } from "@/types/course";
 import CourseSidebar from "./CourseSidebar";
 import LessonContent from "./LessonContent";
+import LoadingSkeleton from "./LoadingSkeleton";
+import { generateLesson } from "@/lib/api";
 
 interface CourseViewerProps {
-  course: Course;
+  outline: CourseOutline;
   onReset: () => void;
 }
 
-export default function CourseViewer({ course, onReset }: CourseViewerProps) {
-  const [activeModuleIndex, setActiveModuleIndex] = useState(0);
-  const [activeLessonIndex, setActiveLessonIndex] = useState(0);
+export default function CourseViewer({ outline, onReset }: CourseViewerProps) {
+  const [activeLesson, setActiveLesson] = useState<{ moduleIdx: number; lessonIdx: number } | null>(null);
+  const [lessonCache, setLessonCache] = useState<Record<string, LessonDetail>>({});
+  const [loadingLessonId, setLoadingLessonId] = useState<string | null>(null);
+  const [lessonError, setLessonError] = useState<string | null>(null);
+  const [visitedLessonIds, setVisitedLessonIds] = useState<Set<string>>(new Set());
 
-  const activeLesson =
-    course.modules[activeModuleIndex]?.lessons[activeLessonIndex];
+  const activeLessonData = activeLesson
+    ? outline.modules[activeLesson.moduleIdx]?.lessons[activeLesson.lessonIdx]
+    : null;
+  const activeDetail = activeLessonData ? lessonCache[activeLessonData.lesson_id] : null;
+  const isLoadingLesson = loadingLessonId !== null;
 
-  // Compute flat list of (moduleIdx, lessonIdx) for prev/next navigation
-  const flatLessons: { moduleIdx: number; lessonIdx: number }[] = [];
-  for (let m = 0; m < course.modules.length; m++) {
-    for (let l = 0; l < course.modules[m].lessons.length; l++) {
-      flatLessons.push({ moduleIdx: m, lessonIdx: l });
-    }
-  }
+  const fetchLesson = useCallback(
+    async (moduleIdx: number, lessonIdx: number) => {
+      const lesson = outline.modules[moduleIdx]?.lessons[lessonIdx];
+      if (!lesson) return;
 
-  const currentFlatIndex = flatLessons.findIndex(
-    (fl) =>
-      fl.moduleIdx === activeModuleIndex && fl.lessonIdx === activeLessonIndex
+      setActiveLesson({ moduleIdx, lessonIdx });
+      setLessonError(null);
+
+      // Already cached — show instantly
+      if (lessonCache[lesson.lesson_id]) {
+        setVisitedLessonIds((prev) => new Set(prev).add(lesson.lesson_id));
+        return;
+      }
+
+      setLoadingLessonId(lesson.lesson_id);
+      try {
+        const detail = await generateLesson({
+          lesson_id: lesson.lesson_id,
+          lesson_title: lesson.lesson_title,
+          course_title: outline.course_title,
+          difficulty: outline.difficulty_level,
+        });
+        setLessonCache((prev) => ({ ...prev, [lesson.lesson_id]: detail }));
+        setVisitedLessonIds((prev) => new Set(prev).add(lesson.lesson_id));
+      } catch (err) {
+        setLessonError(err instanceof Error ? err.message : "Lesson generation failed.");
+      } finally {
+        setLoadingLessonId(null);
+      }
+    },
+    [outline, lessonCache]
   );
-  const isFirst = currentFlatIndex <= 0;
-  const isLast = currentFlatIndex >= flatLessons.length - 1;
 
-  function goToPrev() {
-    if (isFirst) return;
-    const prev = flatLessons[currentFlatIndex - 1];
-    setActiveModuleIndex(prev.moduleIdx);
-    setActiveLessonIndex(prev.lessonIdx);
-  }
-
-  function goToNext() {
-    if (isLast) return;
-    const next = flatLessons[currentFlatIndex + 1];
-    setActiveModuleIndex(next.moduleIdx);
-    setActiveLessonIndex(next.lessonIdx);
-  }
-
-  function handleSelectLesson(moduleIdx: number, lessonIdx: number) {
-    setActiveModuleIndex(moduleIdx);
-    setActiveLessonIndex(lessonIdx);
-  }
+  // Flat lesson list for prev/next
+  const flatLessons = outline.modules.flatMap((mod, mIdx) =>
+    mod.lessons.map((_, lIdx) => ({ moduleIdx: mIdx, lessonIdx: lIdx }))
+  );
+  const currentFlatIdx = activeLesson
+    ? flatLessons.findIndex(
+        (fl) => fl.moduleIdx === activeLesson.moduleIdx && fl.lessonIdx === activeLesson.lessonIdx
+      )
+    : -1;
+  const isFirst = currentFlatIdx <= 0;
+  const isLast = currentFlatIdx >= flatLessons.length - 1;
 
   return (
     <div
@@ -61,7 +80,7 @@ export default function CourseViewer({ course, onReset }: CourseViewerProps) {
         background: "var(--bg-primary)",
       }}
     >
-      {/* Sticky top navbar */}
+      {/* Navbar */}
       <header
         style={{
           position: "sticky",
@@ -77,19 +96,9 @@ export default function CourseViewer({ course, onReset }: CourseViewerProps) {
           flexShrink: 0,
         }}
       >
-        {/* Left: brand */}
-        <span
-          style={{
-            fontWeight: 800,
-            fontSize: "1rem",
-            color: "var(--accent)",
-            whiteSpace: "nowrap",
-          }}
-        >
+        <span style={{ fontWeight: 800, fontSize: "1rem", color: "var(--accent)", whiteSpace: "nowrap" }}>
           ⚡ LearnX 3.0
         </span>
-
-        {/* Center: course title */}
         <span
           style={{
             flex: 1,
@@ -103,10 +112,8 @@ export default function CourseViewer({ course, onReset }: CourseViewerProps) {
             padding: "0 1rem",
           }}
         >
-          {course.course_title}
+          {outline.course_title}
         </span>
-
-        {/* Right: new course button */}
         <button
           onClick={onReset}
           style={{
@@ -137,32 +144,75 @@ export default function CourseViewer({ course, onReset }: CourseViewerProps) {
         </button>
       </header>
 
-      {/* Body: sidebar + main content */}
+      {/* Body */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* Sidebar */}
         <CourseSidebar
-          course={course}
-          activeModuleIndex={activeModuleIndex}
-          activeLessonIndex={activeLessonIndex}
-          onSelectLesson={handleSelectLesson}
+          outline={outline}
+          activeLesson={activeLesson}
+          loadingLessonId={loadingLessonId}
+          visitedLessonIds={visitedLessonIds}
+          onSelectLesson={fetchLesson}
         />
 
-        {/* Main content area */}
-        <main
-          style={{
-            flex: 1,
-            overflowY: "auto",
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
-          {activeLesson ? (
+        <main style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+          {/* Welcome state */}
+          {!activeLesson && !isLoadingLesson && (
+            <div
+              style={{
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "1rem",
+                color: "var(--text-muted)",
+                padding: "2rem",
+                textAlign: "center",
+              }}
+            >
+              <span style={{ fontSize: "2.5rem" }}>👈</span>
+              <p style={{ margin: 0, fontSize: "1rem", fontWeight: 500 }}>
+                Select a lesson from the sidebar to begin
+              </p>
+              <p style={{ margin: 0, fontSize: "0.85rem", color: "var(--text-muted)" }}>
+                Each lesson is generated on demand — your first click may take 15–30 seconds
+              </p>
+            </div>
+          )}
+
+          {/* Loading skeleton */}
+          {isLoadingLesson && (
+            <div style={{ flex: 1 }}>
+              <LoadingSkeleton />
+            </div>
+          )}
+
+          {/* Error */}
+          {lessonError && !isLoadingLesson && (
+            <div
+              style={{
+                margin: "2rem auto",
+                maxWidth: "480px",
+                background: "#7f1d1d",
+                border: "1px solid #ef4444",
+                color: "#fca5a5",
+                padding: "1rem 1.5rem",
+                borderRadius: "10px",
+                fontSize: "0.9rem",
+              }}
+            >
+              ⚠️ {lessonError}
+            </div>
+          )}
+
+          {/* Lesson content */}
+          {activeDetail && !isLoadingLesson && (
             <>
               <div style={{ flex: 1 }}>
-                <LessonContent lesson={activeLesson} />
+                <LessonContent lesson={activeDetail} />
               </div>
 
-              {/* Navigation buttons */}
+              {/* Prev/Next nav */}
               <div
                 style={{
                   display: "flex",
@@ -174,7 +224,12 @@ export default function CourseViewer({ course, onReset }: CourseViewerProps) {
                 }}
               >
                 <button
-                  onClick={goToPrev}
+                  onClick={() => {
+                    if (!isFirst) {
+                      const prev = flatLessons[currentFlatIdx - 1];
+                      fetchLesson(prev.moduleIdx, prev.lessonIdx);
+                    }
+                  }}
                   disabled={isFirst}
                   style={{
                     padding: "0.6rem 1.25rem",
@@ -187,24 +242,17 @@ export default function CourseViewer({ course, onReset }: CourseViewerProps) {
                     cursor: isFirst ? "not-allowed" : "pointer",
                     fontFamily: "inherit",
                     opacity: isFirst ? 0.5 : 1,
-                    transition: "all 0.15s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!isFirst) {
-                      e.currentTarget.style.background = "var(--bg-hover)";
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!isFirst) {
-                      e.currentTarget.style.background = "var(--bg-card)";
-                    }
                   }}
                 >
-                  ← Previous Lesson
+                  ← Previous
                 </button>
-
                 <button
-                  onClick={goToNext}
+                  onClick={() => {
+                    if (!isLast) {
+                      const next = flatLessons[currentFlatIdx + 1];
+                      fetchLesson(next.moduleIdx, next.lessonIdx);
+                    }
+                  }}
                   disabled={isLast}
                   style={{
                     padding: "0.6rem 1.25rem",
@@ -217,36 +265,12 @@ export default function CourseViewer({ course, onReset }: CourseViewerProps) {
                     cursor: isLast ? "not-allowed" : "pointer",
                     fontFamily: "inherit",
                     opacity: isLast ? 0.5 : 1,
-                    transition: "all 0.15s",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!isLast) {
-                      e.currentTarget.style.background = "var(--accent-hover)";
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!isLast) {
-                      e.currentTarget.style.background = "var(--accent)";
-                    }
                   }}
                 >
-                  Next Lesson →
+                  Next →
                 </button>
               </div>
             </>
-          ) : (
-            <div
-              style={{
-                flex: 1,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                color: "var(--text-muted)",
-                fontSize: "1rem",
-              }}
-            >
-              Select a lesson to begin
-            </div>
           )}
         </main>
       </div>
