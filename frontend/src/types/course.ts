@@ -1,37 +1,70 @@
 import { z } from 'zod';
 
-export const ContentTypeSchema = z.enum(['video', 'article', 'concept_breakdown']);
-export type ContentType = z.infer<typeof ContentTypeSchema>;
-
 export const DifficultySchema = z.enum(['Beginner', 'Intermediate', 'Advanced']);
 export type Difficulty = z.infer<typeof DifficultySchema>;
 
-export const LessonSchema = z.object({
+// ---------------------------------------------------------------------------
+// Course Outline — lightweight skeleton returned by /api/generate-outline
+// ---------------------------------------------------------------------------
+
+export const OutlineLessonSchema = z.object({
+  lesson_id: z.string(),
   lesson_title: z.string(),
-  content_type: ContentTypeSchema,
-  source_url: z.string().url().optional().nullable(),
-  content_markdown: z.string(),
-  key_takeaways: z.array(z.string()),
 });
-export type Lesson = z.infer<typeof LessonSchema>;
+export type OutlineLesson = z.infer<typeof OutlineLessonSchema>;
 
-export const ModuleSchema = z.object({
+export const OutlineModuleSchema = z.object({
   module_title: z.string(),
-  module_description: z.string(),
-  lessons: z.array(LessonSchema),
+  lessons: z.array(OutlineLessonSchema),
 });
-export type Module = z.infer<typeof ModuleSchema>;
+export type OutlineModule = z.infer<typeof OutlineModuleSchema>;
 
-export const CourseSchema = z.object({
+export const CourseOutlineSchema = z.object({
   course_title: z.string(),
   difficulty_level: DifficultySchema,
   estimated_hours: z.number(),
-  modules: z.array(ModuleSchema),
+  modules: z.array(OutlineModuleSchema),
 });
-export type Course = z.infer<typeof CourseSchema>;
+export type CourseOutline = z.infer<typeof CourseOutlineSchema>;
 
-export const CourseGenerateRequestSchema = z.object({
+// ---------------------------------------------------------------------------
+// Lesson Detail — rich interactive payload returned by /api/generate-lesson
+// ---------------------------------------------------------------------------
+
+export const ExerciseSchema = z.object({
+  question: z.string(),
+  options: z.array(z.string()),
+  correct_answer: z.string(),
+  explanation: z.string(),
+});
+export type Exercise = z.infer<typeof ExerciseSchema>;
+
+export const LessonDetailSchema = z.object({
+  lesson_id: z.string(),
+  lesson_title: z.string(),
+  estimated_time_minutes: z.number(),
+  video_url: z.string().url().optional().nullable(),
+  concept_summary: z.string(),
+  practical_example: z.string().optional().nullable(),
+  exercises: z.array(ExerciseSchema),
+  key_takeaways: z.array(z.string()),
+});
+export type LessonDetail = z.infer<typeof LessonDetailSchema>;
+
+// ---------------------------------------------------------------------------
+// Request types
+// ---------------------------------------------------------------------------
+
+export const OutlineGenerateRequestSchema = z.object({
   topic: z.string().min(1, 'Topic is required'),
   difficulty: DifficultySchema.optional(),
 });
-export type CourseGenerateRequest = z.infer<typeof CourseGenerateRequestSchema>;
+export type OutlineGenerateRequest = z.infer<typeof OutlineGenerateRequestSchema>;
+
+export const LessonGenerateRequestSchema = z.object({
+  lesson_id: z.string(),
+  lesson_title: z.string(),
+  course_title: z.string(),
+  difficulty: DifficultySchema.default('Beginner'),
+});
+export type LessonGenerateRequest = z.infer<typeof LessonGenerateRequestSchema>;
