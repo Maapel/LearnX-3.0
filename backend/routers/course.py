@@ -1,10 +1,15 @@
 """
 routers/course.py — LearnX 3.0
 POST /api/generate-course: chains the sourcing engine + AI brain into one endpoint.
+Includes a JSON file-backed course cache to skip the full pipeline on repeat requests.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
+import re
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
@@ -21,24 +26,81 @@ router = APIRouter(prefix="/api", tags=["course"])
 
 YOUTUBE_DOMAINS = ("youtube.com", "youtu.be", "www.youtube.com")
 
+# ---------------------------------------------------------------------------
+# Course cache — JSON file on disk so it persists across server restarts
+# ---------------------------------------------------------------------------
+_CACHE_DIR = Path(__file__).resolve().parents[1] / ".cache"
+_CACHE_DIR.mkdir(exist_ok=True)
+
+
+def _normalize_intent(topic: str, difficulty: str) -> str:
+    """Lowercase + collapse whitespace for stable cache keys."""
+    topic_clean = re.sub(r"\s+", " ", topic.strip().lower())
+    return f"{topic_clean}::{difficulty.lower()}"
+
+
+def _cache_path(intent_key: str) -> Path:
+    key_hash = hashlib.md5(intent_key.encode()).hexdigest()
+    return _CACHE_DIR / f"{key_hash}.json"
+
+
+def _load_from_cache(intent_key: str) -> dict | None:
+    path = _cache_path(intent_key)
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            logger.info("Course cache HIT for %r", intent_key)
+            return data
+        except Exception as exc:
+            logger.warning("Cache read failed for %r: %s", intent_key, exc)
+    return None
+
+
+def _save_to_cache(intent_key: str, course_dict: dict) -> None:
+    path = _cache_path(intent_key)
+    try:
+        path.write_text(json.dumps(course_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("Course cached → %s", path.name)
+    except Exception as exc:
+        logger.warning("Cache write failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _is_youtube(url: str) -> bool:
     return any(domain in url for domain in YOUTUBE_DOMAINS)
 
 
+# ---------------------------------------------------------------------------
+# Endpoint
+# ---------------------------------------------------------------------------
+
 @router.post("/generate-course", response_model=Course)
 async def generate_course(request: CourseGenerateRequest) -> Course:
     """
     Full pipeline:
-      1. Use Groq to generate search queries from the topic
-      2. Use Tavily to fetch top URLs
+      0. Check course cache — return immediately if this topic+difficulty was generated before
+      1. Use Groq to generate 2 consolidated search queries
+      2. Use Tavily (basic depth, cached) to fetch top URLs
       3. Concurrently scrape articles + fetch YouTube transcripts
-      4. Use Gemini to synthesize a structured Course JSON
+      4. Use Gemini (structured output) → Groq → Ollama to synthesize a Course JSON
+      5. Cache result and return
     """
     topic = request.topic.strip()
     difficulty = request.difficulty or "Beginner"
+    intent_key = _normalize_intent(topic, difficulty)
 
-    logger.info("Starting course generation for topic=%r, difficulty=%r", topic, difficulty)
+    logger.info("Course request: topic=%r, difficulty=%r", topic, difficulty)
+
+    # ── Step 0: Check course cache ────────────────────────────────────────────
+    cached = _load_from_cache(intent_key)
+    if cached:
+        try:
+            return Course(**cached)
+        except Exception as exc:
+            logger.warning("Cached course failed validation (%s) — regenerating.", exc)
 
     # ── Step 1: Generate search queries via Groq ──────────────────────────────
     try:
@@ -48,12 +110,11 @@ async def generate_course(request: CourseGenerateRequest) -> Course:
         logger.error("Query generation failed: %s", exc)
         queries = [f"{topic} {difficulty} tutorial guide", f"learn {topic} comprehensive overview"]
 
-    # ── Step 2: Search the web for each query (take first 3 queries) ─────────
+    # ── Step 2: Search the web (Tavily, basic, cached) ────────────────────────
     try:
         search_tasks = [search_web(q, num_results=3) for q in queries[:2]]
         search_batches = await asyncio.gather(*search_tasks, return_exceptions=True)
 
-        # Flatten + deduplicate by URL
         seen_urls: set[str] = set()
         search_results: list[dict] = []
         for batch in search_batches:
@@ -78,7 +139,7 @@ async def generate_course(request: CourseGenerateRequest) -> Course:
         )
 
     # ── Step 3: Concurrently scrape articles + fetch transcripts ──────────────
-    urls = [r["url"] for r in search_results[:8]]  # cap at 8 URLs
+    urls = [r["url"] for r in search_results[:6]]  # cap at 6 URLs (down from 8)
     youtube_urls = [u for u in urls if _is_youtube(u)]
     article_urls = [u for u in urls if not _is_youtube(u)]
 
@@ -105,7 +166,7 @@ async def generate_course(request: CourseGenerateRequest) -> Course:
         len(transcripts),
     )
 
-    # ── Step 4: Synthesize with Gemini ────────────────────────────────────────
+    # ── Step 4: Synthesize (Gemini structured → Groq → Ollama) ───────────────
     try:
         course_dict = await synthesize_course(
             topic=topic,
@@ -118,7 +179,7 @@ async def generate_course(request: CourseGenerateRequest) -> Course:
         logger.error("Synthesis failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Course synthesis failed: {exc}")
 
-    # ── Step 5: Validate + return ─────────────────────────────────────────────
+    # ── Step 5: Validate, cache, return ──────────────────────────────────────
     try:
         course = Course(**course_dict)
     except Exception as exc:
@@ -128,5 +189,6 @@ async def generate_course(request: CourseGenerateRequest) -> Course:
             detail=f"Generated course failed schema validation: {exc}",
         )
 
+    _save_to_cache(intent_key, course_dict)
     logger.info("Course generated successfully: %r", course.course_title)
     return course
