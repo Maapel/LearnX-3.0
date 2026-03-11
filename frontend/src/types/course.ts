@@ -10,6 +10,8 @@ export type Difficulty = z.infer<typeof DifficultySchema>;
 export const OutlineLessonSchema = z.object({
   lesson_id: z.string(),
   lesson_title: z.string(),
+  lesson_context: z.string(),
+  target_search_queries: z.array(z.string()),
 });
 export type OutlineLesson = z.infer<typeof OutlineLessonSchema>;
 
@@ -64,6 +66,8 @@ export type OutlineGenerateRequest = z.infer<typeof OutlineGenerateRequestSchema
 export const LessonGenerateRequestSchema = z.object({
   lesson_id: z.string(),
   lesson_title: z.string(),
+  lesson_context: z.string(),
+  target_search_queries: z.array(z.string()),
   course_title: z.string(),
   difficulty: DifficultySchema.default('Beginner'),
 });

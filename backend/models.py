@@ -12,6 +12,22 @@ from pydantic import BaseModel, Field
 class OutlineLesson(BaseModel):
     lesson_id: str = Field(description="A unique UUID string identifying this lesson")
     lesson_title: str = Field(description="A concise, descriptive title for the lesson")
+    lesson_context: str = Field(
+        description=(
+            "1-2 sentences describing EXACTLY what this lesson covers and how it connects to "
+            "the previous lesson. Written by the curriculum planner to ensure continuity and "
+            "prevent content drift during downstream JIT generation."
+        )
+    )
+    target_search_queries: list[str] = Field(
+        description=(
+            "1-2 highly specific web search queries that should be executed when generating "
+            "the full content for this lesson. Act as a search architect: queries must be "
+            "precise enough that the top results contain exactly the information needed for "
+            "this lesson's scope. E.g. ['React useEffect dependency array tutorial', "
+            "'useEffect infinite loop prevention React hooks']"
+        )
+    )
 
 
 class OutlineModule(BaseModel):
@@ -89,5 +105,7 @@ class OutlineGenerateRequest(BaseModel):
 class LessonGenerateRequest(BaseModel):
     lesson_id: str = Field(description="UUID of the lesson to generate")
     lesson_title: str = Field(description="Title of the lesson to generate")
+    lesson_context: str = Field(description="1-2 sentence curriculum context from the outline")
+    target_search_queries: list[str] = Field(description="Pre-planned search queries from the outline")
     course_title: str = Field(description="Parent course title for context")
     difficulty: Literal["Beginner", "Intermediate", "Advanced"] = "Beginner"
