@@ -44,6 +44,8 @@ export default function CourseViewer({ outline, onReset }: CourseViewerProps) {
         const detail = await generateLesson({
           lesson_id: lesson.lesson_id,
           lesson_title: lesson.lesson_title,
+          lesson_context: lesson.lesson_context,
+          target_search_queries: lesson.target_search_queries,
           course_title: outline.course_title,
           difficulty: outline.difficulty_level,
         });
