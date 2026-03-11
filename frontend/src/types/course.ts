@@ -30,8 +30,17 @@ export const CourseOutlineSchema = z.object({
 export type CourseOutline = z.infer<typeof CourseOutlineSchema>;
 
 // ---------------------------------------------------------------------------
-// Lesson Detail — rich interactive payload returned by /api/generate-lesson
+// Lesson Detail — chunked deep-learning payload from /api/generate-lesson
+// estimated_time_minutes is calculated server-side from word count
 // ---------------------------------------------------------------------------
+
+export const LessonSectionSchema = z.object({
+  section_title: z.string(),
+  explanation: z.string(),
+  code_snippet: z.string().optional().nullable(),
+  visual_analogy: z.string().optional().nullable(),
+});
+export type LessonSection = z.infer<typeof LessonSectionSchema>;
 
 export const ExerciseSchema = z.object({
   question: z.string(),
@@ -46,8 +55,7 @@ export const LessonDetailSchema = z.object({
   lesson_title: z.string(),
   estimated_time_minutes: z.number(),
   video_url: z.string().url().optional().nullable(),
-  concept_summary: z.string(),
-  practical_example: z.string().optional().nullable(),
+  sections: z.array(LessonSectionSchema),
   exercises: z.array(ExerciseSchema),
   key_takeaways: z.array(z.string()),
 });
