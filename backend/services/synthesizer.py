@@ -183,6 +183,42 @@ def _escape_control_chars_in_strings(text: str) -> str:
     return "".join(result)
 
 
+_DEBUG_DIR = Path(__file__).resolve().parents[2] / ".cache" / "debug"
+_DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _save_debug(label: str, raw: str) -> None:
+    """Save raw LLM response to .cache/debug/ for post-mortem analysis."""
+    import time as _time
+    fname = _DEBUG_DIR / f"{label}_{int(_time.time())}.txt"
+    try:
+        fname.write_text(raw, encoding="utf-8")
+        logger.info("Saved debug dump: %s", fname)
+    except Exception:
+        pass
+
+
+def _fix_unquoted_code_blocks(text: str) -> str:
+    """
+    Fix bare backtick code blocks used as JSON values, e.g.:
+        "code_snippet": ```python\nsome code\n```
+    →   "code_snippet": "```python\\nsome code\\n```"
+    Only replaces blocks that appear as values (preceded by `:` + optional whitespace).
+    """
+    def _quote_block(m: re.Match) -> str:
+        content = m.group(0)
+        # Escape for JSON string embedding
+        content = content.replace("\\", "\\\\")
+        content = content.replace('"', '\\"')
+        content = content.replace("\n", "\\n")
+        content = content.replace("\r", "\\r")
+        content = content.replace("\t", "\\t")
+        return f'"{content}"'
+
+    # Match ```...``` blocks that appear directly after a colon (JSON value position)
+    return re.sub(r'(?<=:\s{0,10})```[\s\S]*?```', _quote_block, text)
+
+
 def _fix_python_literals(text: str) -> str:
     """Replace Python literals that are invalid JSON: None→null, True→true, False→false."""
     # Only replace when they appear as JSON values (after : or [ or ,)
@@ -200,16 +236,25 @@ def _fix_missing_values(text: str) -> str:
     return text
 
 
+def _apply_all_fixes(text: str) -> str:
+    """Apply all known fixers in the right order."""
+    text = _fix_unquoted_code_blocks(text)
+    text = _escape_control_chars_in_strings(text)
+    text = _fix_invalid_escapes(text)
+    text = _fix_python_literals(text)
+    text = _fix_missing_values(text)
+    return text
+
+
 def _safe_json_loads(text: str) -> dict:
     """
-    Parse JSON robustly through 7 escalating strategies:
-    1. Standard parse (handles clean LLM output)
-    2. Extract first {...} block (strips preamble text)
-    3. Escape raw control chars inside strings (fixes literal newlines in values)
-    4. Fix Python literals (None/True/False → null/true/false)
-    5. Fix missing/empty values ("key": , → "key": null,)
-    6. Fix invalid backslash escapes (fixes \\p, \\s etc.)
-    7. All fixes combined + strip remaining junk
+    Parse JSON robustly through 6 escalating strategies:
+    1. Standard parse
+    2. Extract first {...} block (strips preamble/fences)
+    3. Fix unquoted backtick code blocks (Groq writes bare ```python blocks as values)
+    4. Escape raw control chars in strings (literal newlines from Groq)
+    5. Fix Python literals + missing values + invalid escapes
+    6. All fixes + strip remaining control chars
     """
     # 1. Standard
     try:
@@ -222,7 +267,6 @@ def _safe_json_loads(text: str) -> dict:
     end = text.rfind("}")
     if start == -1 or end == -1 or end <= start:
         raise ValueError("No JSON object found in response")
-
     snippet = text[start:end + 1]
 
     # 2. Raw snippet
@@ -231,34 +275,27 @@ def _safe_json_loads(text: str) -> dict:
     except json.JSONDecodeError:
         pass
 
-    # 3. Escape control chars inside strings (fixes literal newlines from Groq)
+    # 3. Fix unquoted code blocks (primary fix for "Expecting value" on bare ``` )
+    try:
+        return json.loads(_fix_unquoted_code_blocks(snippet))
+    except json.JSONDecodeError:
+        pass
+
+    # 4. Escape raw control chars inside strings
     try:
         return json.loads(_escape_control_chars_in_strings(snippet))
     except json.JSONDecodeError:
         pass
 
-    # 4. Python literals (None/True/False)
+    # 5. Python literals + missing values + invalid escapes
     try:
-        return json.loads(_fix_python_literals(snippet))
+        return json.loads(_fix_python_literals(_fix_missing_values(_fix_invalid_escapes(snippet))))
     except json.JSONDecodeError:
         pass
 
-    # 5. Missing/empty values
-    try:
-        return json.loads(_fix_missing_values(_fix_python_literals(snippet)))
-    except json.JSONDecodeError:
-        pass
-
-    # 6. Fix invalid backslash sequences
-    try:
-        return json.loads(_fix_invalid_escapes(snippet))
-    except json.JSONDecodeError:
-        pass
-
-    # 7. All fixes combined + strip remaining control chars
+    # 6. All fixes + strip remaining non-printable chars
     cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', snippet)
-    fixed = _fix_missing_values(_fix_python_literals(_fix_invalid_escapes(_escape_control_chars_in_strings(cleaned))))
-    return json.loads(fixed)
+    return json.loads(_apply_all_fixes(cleaned))
 
 
 def _strip_fences(text: str) -> str:
@@ -454,7 +491,8 @@ async def synthesize_outline(topic: str, difficulty: str) -> dict:
                         ]
             return data
         except Exception as e:
-            logger.error("Outline parse failed: %s", e)
+            logger.error("Outline parse failed: %s\nRaw (first 500 chars): %s", e, (raw or "")[:500])
+            _save_debug("outline_parse_fail", raw)
 
     # Fallback outline
     def _fallback_lesson(title: str) -> dict:
@@ -591,6 +629,7 @@ async def synthesize_lesson(
             return data
         except Exception as e:
             logger.error("Lesson parse failed: %s\nRaw (first 500 chars): %s", e, (raw or "")[:500])
+            _save_debug("lesson_parse_fail", raw)
 
     # Fallback lesson
     return {
