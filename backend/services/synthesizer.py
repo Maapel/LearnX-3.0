@@ -203,20 +203,19 @@ def _fix_unquoted_code_blocks(text: str) -> str:
     Fix bare backtick code blocks used as JSON values, e.g.:
         "code_snippet": ```python\nsome code\n```
     →   "code_snippet": "```python\\nsome code\\n```"
-    Only replaces blocks that appear as values (preceded by `:` + optional whitespace).
+    Captures the preceding colon+whitespace so it's preserved in output.
     """
     def _quote_block(m: re.Match) -> str:
-        content = m.group(0)
-        # Escape for JSON string embedding
+        prefix = m.group(1)   # ": " part — preserved as-is
+        content = m.group(2)  # the ```...``` block
         content = content.replace("\\", "\\\\")
         content = content.replace('"', '\\"')
         content = content.replace("\n", "\\n")
         content = content.replace("\r", "\\r")
         content = content.replace("\t", "\\t")
-        return f'"{content}"'
+        return f'{prefix}"{content}"'
 
-    # Match ```...``` blocks that appear directly after a colon (JSON value position)
-    return re.sub(r'(?<=:\s{0,10})```[\s\S]*?```', _quote_block, text)
+    return re.sub(r'(:\s*)(```[\s\S]*?```)', _quote_block, text)
 
 
 def _fix_python_literals(text: str) -> str:
