@@ -342,17 +342,22 @@ def render_report(topic: str, difficulty: str, outline: dict,
 
 def main():
     parser = argparse.ArgumentParser(description="LearnX Course Evaluator")
-    parser.add_argument("--topic",      default="Machine Learning",  help="Course topic")
-    parser.add_argument("--difficulty", default="Intermediate",      choices=["Beginner", "Intermediate", "Advanced"])
+    parser.add_argument("--topic",       default="Machine Learning", help="Course topic")
+    parser.add_argument("--difficulty",  default="Intermediate",     choices=["Beginner", "Intermediate", "Advanced"])
+    parser.add_argument("--max-modules", type=int, default=0,        help="Limit number of modules to evaluate (0 = all)")
     args = parser.parse_args()
 
-    topic      = args.topic
-    difficulty = args.difficulty
+    topic       = args.topic
+    difficulty  = args.difficulty
+    max_modules = args.max_modules
 
     # 1. Generate outline
     outline = generate_outline(topic, difficulty)
     course_title = outline.get("course_title", topic)
     modules = outline.get("modules", [])
+    if max_modules > 0:
+        modules = modules[:max_modules]
+        log(f"Limiting to {max_modules} module(s) for this run")
     log(f"Outline ready: {course_title!r} — {len(modules)} modules")
 
     # 2. Generate every lesson + evaluate
