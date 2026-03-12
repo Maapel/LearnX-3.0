@@ -200,22 +200,96 @@ def _save_debug(label: str, raw: str) -> None:
 
 def _fix_unquoted_code_blocks(text: str) -> str:
     """
-    Fix bare backtick code blocks used as JSON values, e.g.:
-        "code_snippet": ```python\nsome code\n```
-    →   "code_snippet": "```python\\nsome code\\n```"
-    Captures the preceding colon+whitespace so it's preserved in output.
-    """
-    def _quote_block(m: re.Match) -> str:
-        prefix = m.group(1)   # ": " part — preserved as-is
-        content = m.group(2)  # the ```...``` block
-        content = content.replace("\\", "\\\\")
-        content = content.replace('"', '\\"')
-        content = content.replace("\n", "\\n")
-        content = content.replace("\r", "\\r")
-        content = content.replace("\t", "\\t")
-        return f'{prefix}"{content}"'
+    Fix bare backtick code blocks used as JSON values.
+    Uses a character-walk to track JSON string state, so backticks
+    INSIDE quoted strings are never touched — only bare unquoted ones.
 
-    return re.sub(r'(:\s*)(```[\s\S]*?```)', _quote_block, text)
+    Handles both triple (```python ... ```) and single (`code`) forms.
+    """
+    result: list[str] = []
+    i = 0
+    n = len(text)
+    in_string = False
+    escaped = False
+
+    def _encode(content: str) -> str:
+        return (content
+                .replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t"))
+
+    while i < n:
+        ch = text[i]
+
+        if escaped:
+            result.append(ch)
+            escaped = False
+            i += 1
+            continue
+
+        if in_string:
+            if ch == "\\":
+                result.append(ch)
+                escaped = True
+            elif ch == '"':
+                result.append(ch)
+                in_string = False
+            else:
+                result.append(ch)
+            i += 1
+            continue
+
+        # Outside a quoted string — track opening quotes
+        if ch == '"':
+            result.append(ch)
+            in_string = True
+            i += 1
+            continue
+
+        # Detect unquoted backtick blocks (JSON value position)
+        if ch == "`":
+            if text[i:i + 3] == "```":
+                # Triple backtick block
+                end = text.find("```", i + 3)
+                if end != -1:
+                    result.append(f'"{_encode(text[i:end + 3])}"')
+                    i = end + 3
+                    continue
+            # Single backtick block
+            end = text.find("`", i + 1)
+            if end != -1:
+                result.append(f'"{_encode(text[i:end + 1])}"')
+                i = end + 1
+                continue
+
+        result.append(ch)
+        i += 1
+
+    return "".join(result)
+
+
+def _fix_code_string_issues(text: str) -> str:
+    """
+    Fix structural issues with code blocks inside JSON strings.
+    All rules operate on raw text (literal newlines still present).
+
+    1. Collapse double opening fence: ```\\n```lang → ```lang
+    2. Missing closing " after code block, before comma:
+         ```\\n,  →  ```"\\n,   (only when no " already follows ```)
+    3. Missing closing " after code block, before next JSON key:
+         ```\\n      "key":  →  ```"\\n      "key":
+    4. Missing comma between consecutive string fields:
+         "value"\\n      "key":  →  "value",\\n      "key":
+    """
+    # 1. Collapse double fence
+    text = re.sub(r'```\s*\n```', '```', text)
+    # 2 & 3. Add missing closing " after ``` when not already present
+    text = re.sub(r'(```+)(?!")\n(\s*(?:,|"[^"\n]+"\s*:))', r'\1"\n\2', text)
+    # 4. Missing comma between fields (runs after " is added by rules 2&3)
+    text = re.sub(r'(")\s*\n(\s+"[^"\n]+"\s*:)', r'\1,\n\2', text)
+    return text
 
 
 def _fix_python_literals(text: str) -> str:
@@ -236,24 +310,26 @@ def _fix_missing_values(text: str) -> str:
 
 
 def _apply_all_fixes(text: str) -> str:
-    """Apply all known fixers in the right order."""
-    text = _fix_unquoted_code_blocks(text)
-    text = _escape_control_chars_in_strings(text)
-    text = _fix_invalid_escapes(text)
-    text = _fix_python_literals(text)
-    text = _fix_missing_values(text)
+    """Apply all known fixers in the correct order."""
+    text = _fix_unquoted_code_blocks(text)       # wrap bare backtick values in quotes (must be first)
+    text = _fix_code_string_issues(text)         # structural code-block fixes (operates on already-quoted blocks)
+    text = _escape_control_chars_in_strings(text) # escape literal \n inside strings
+    text = _fix_invalid_escapes(text)             # fix \* \p etc.
+    text = _fix_python_literals(text)             # None/True/False → null/true/false
+    text = _fix_missing_values(text)              # "key": , → "key": null,
     return text
 
 
 def _safe_json_loads(text: str) -> dict:
     """
-    Parse JSON robustly through 6 escalating strategies:
+    Parse JSON robustly through 7 escalating strategies:
     1. Standard parse
     2. Extract first {...} block (strips preamble/fences)
     3. Fix unquoted backtick code blocks (Groq writes bare ```python blocks as values)
     4. Escape raw control chars in strings (literal newlines from Groq)
     5. Fix Python literals + missing values + invalid escapes
     6. All fixes + strip remaining control chars
+    7. json-repair library (best-effort reconstruction for severely broken JSON)
     """
     # 1. Standard
     try:
@@ -294,24 +370,43 @@ def _safe_json_loads(text: str) -> dict:
 
     # 6. All fixes + strip remaining non-printable chars
     cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', snippet)
-    return json.loads(_apply_all_fixes(cleaned))
+    try:
+        return json.loads(_apply_all_fixes(cleaned))
+    except json.JSONDecodeError:
+        pass
+
+    # 7. json-repair: best-effort reconstruction for severely broken JSON
+    try:
+        from json_repair import repair_json
+        repaired = repair_json(text, return_objects=True)
+        if isinstance(repaired, dict) and repaired:
+            logger.info("json-repair successfully reconstructed JSON")
+            return repaired
+    except Exception:
+        pass
+
+    raise json.JSONDecodeError("All JSON repair strategies exhausted", text, 0)
 
 
 def _strip_fences(text: str) -> str:
+    """Remove outer ```json ... ``` wrapper only.
+    Previous line-by-line approach broke on code_snippet values that contain
+    their own closing ``` — it stopped at the first interior fence.
+    Now we simply strip the opening fence line and the trailing closing fence.
+    """
     text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        inner = []
-        skip = True
-        for line in lines:
-            if skip and line.startswith("```"):
-                skip = False
-                continue
-            if line.strip() == "```" and not skip:
-                break
-            inner.append(line)
-        text = "\n".join(inner).strip()
-    return text
+    if not text.startswith("```"):
+        return text
+    # Remove the opening fence line (```json or ```JSON etc.)
+    newline = text.find("\n")
+    if newline == -1:
+        return text
+    inner = text[newline + 1:]
+    # Remove trailing closing fence if present
+    stripped = inner.rstrip()
+    if stripped.endswith("```"):
+        inner = stripped[:-3].rstrip()
+    return inner
 
 
 # ---------------------------------------------------------------------------

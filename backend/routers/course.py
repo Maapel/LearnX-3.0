@@ -184,7 +184,7 @@ async def generate_lesson(request: LessonGenerateRequest) -> LessonDetail:
 
     # Calculate reading time from word count — never trust the LLM to estimate this
     total_words = sum(
-        len(s.get("explanation", "").split())
+        len((s.get("explanation") or "").split())
         for s in lesson_dict.get("sections", [])
     )
     lesson_dict["estimated_time_minutes"] = max(1, math.ceil(total_words / 200))
