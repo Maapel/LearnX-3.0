@@ -151,11 +151,14 @@ async def generate_lesson(request: LessonGenerateRequest) -> LessonDetail:
     cache_key = f"lesson::{request.lesson_id}"
     cached = _load_cache(cache_key)
     if cached:
-        logger.info("Lesson cache HIT: %r", request.lesson_title)
-        try:
-            return LessonDetail(**cached)
-        except Exception as e:
-            logger.warning("Cached lesson invalid (%s) — regenerating", e)
+        if len(cached.get("sections", [])) >= 2:
+            logger.info("Lesson cache HIT: %r", request.lesson_title)
+            try:
+                return LessonDetail(**cached)
+            except Exception as e:
+                logger.warning("Cached lesson invalid (%s) — regenerating", e)
+        else:
+            logger.info("Lesson cache STALE (fallback content) for %r — regenerating", request.lesson_title)
 
     logger.info(
         "Generating lesson: %r | queries: %s",
@@ -216,5 +219,10 @@ async def generate_lesson(request: LessonGenerateRequest) -> LessonDetail:
         logger.error("Lesson validation failed: %s\nDict: %s", exc, lesson_dict)
         raise HTTPException(status_code=500, detail=f"Lesson validation failed: {exc}")
 
-    _save_cache(cache_key, lesson_dict)
+    # Only cache lessons with real content — never cache static fallback (1 section)
+    if len(lesson_dict.get("sections", [])) >= 2:
+        _save_cache(cache_key, lesson_dict)
+    else:
+        logger.warning("Lesson %r has only %d section(s) — skipping cache (likely fallback)",
+                       request.lesson_title, len(lesson_dict.get("sections", [])))
     return lesson
