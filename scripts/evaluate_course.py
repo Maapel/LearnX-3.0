@@ -103,7 +103,7 @@ def generate_lesson(lesson: dict, course_title: str, difficulty: str) -> dict:
             "course_title":          course_title,
             "difficulty":            difficulty,
         },
-        timeout=180,
+        timeout=480,  # Ollama can take 5-7 min under sequential load
     )
     r.raise_for_status()
     return r.json()
