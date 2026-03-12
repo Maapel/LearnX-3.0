@@ -86,7 +86,7 @@ _LESSON_SCHEMA = genai_types.Schema(
     properties={
         "lesson_id": genai_types.Schema(type=genai_types.Type.STRING),
         "lesson_title": genai_types.Schema(type=genai_types.Type.STRING),
-        "video_url": genai_types.Schema(type=genai_types.Type.STRING),
+        "video_url": genai_types.Schema(type=genai_types.Type.STRING, nullable=True),
         "sections": genai_types.Schema(
             type=genai_types.Type.ARRAY,
             items=genai_types.Schema(
@@ -625,8 +625,7 @@ _LESSON_GROQ_SYSTEM = (
     "markdown formatting: **bold** key terms, bullet lists), an optional code_snippet (fenced "
     "code block), and an optional visual_analogy (one sentence). "
     "Do NOT write a single monolithic text block. Chunk the content into clearly titled sections. "
-    "exercises must have correct_answer that EXACTLY matches one of the options strings. "
-    "video_url must be null if you are not certain of a real YouTube URL."
+    "exercises must have correct_answer that EXACTLY matches one of the options strings."
 )
 
 _LESSON_PROMPT_TMPL = """You are generating a deep, structured lesson for an online course.
@@ -646,7 +645,6 @@ Return a JSON object with this EXACT structure:
 {{
   "lesson_id": "{lesson_id}",
   "lesson_title": "{lesson_title}",
-  "video_url": "<real youtube URL or null>",
   "sections": [
     {{
       "section_title": "<specific heading, not generic>",
@@ -673,7 +671,6 @@ RULES — violating any rule makes the output invalid:
 4. visual_analogy: one sentence only. Real-world comparison. Null if forced.
 5. exercises: 2-3 MCQ questions, each with 3-4 options
 6. correct_answer must be the EXACT string of one of the options (copy-paste it)
-7. video_url: only a confirmed real YouTube URL for this exact topic, otherwise null
 Return ONLY JSON, no explanation."""
 
 
@@ -720,6 +717,8 @@ async def synthesize_lesson(
                     ex["correct_answer"] = opts[0] if opts else ex["correct_answer"]
             # Remove LLM-hallucinated time — router calculates it programmatically
             data.pop("estimated_time_minutes", None)
+            # Never trust LLM-generated video URLs — router injects real ones from search results
+            data["video_url"] = None
             return data
         except Exception as e:
             logger.error("Lesson parse failed: %s\nRaw (first 500 chars): %s", e, (raw or "")[:500])

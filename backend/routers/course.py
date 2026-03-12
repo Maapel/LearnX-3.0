@@ -190,8 +190,17 @@ async def generate_lesson(request: LessonGenerateRequest) -> LessonDetail:
     lesson_dict["estimated_time_minutes"] = max(1, math.ceil(total_words / 200))
     logger.info("Calculated reading time: %d min (%d words)", lesson_dict["estimated_time_minutes"], total_words)
 
-    # Inject real sources from search results (non-YouTube only, deduplicated, max 5)
+    # Inject real YouTube URL from search results (first match wins; never trust LLM for this)
     YOUTUBE_DOMAINS_SET = set(YOUTUBE_DOMAINS)
+    lesson_dict["video_url"] = None
+    for r in search_results:
+        url = r.get("url", "").strip()
+        if url and any(d in url for d in YOUTUBE_DOMAINS_SET):
+            lesson_dict["video_url"] = url
+            logger.info("Injected YouTube URL from search results: %s", url)
+            break
+
+    # Inject real sources from search results (non-YouTube only, deduplicated, max 5)
     seen_urls: set[str] = set()
     sources = []
     for r in search_results:
