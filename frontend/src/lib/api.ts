@@ -1,4 +1,4 @@
-import { CourseOutline, LessonDetail, OutlineGenerateRequest, LessonGenerateRequest } from '@/types/course';
+import { CourseOutline, LessonDetail, OutlineGenerateRequest, LessonGenerateRequest, SavedCourse } from '@/types/course';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -25,6 +25,12 @@ export async function generateLesson(request: LessonGenerateRequest): Promise<Le
     const detail = await response.text().catch(() => response.statusText);
     throw new Error(`Lesson generation failed: ${response.status} — ${detail}`);
   }
+  return response.json();
+}
+
+export async function listCourses(): Promise<SavedCourse[]> {
+  const response = await fetch(`${API_URL}/api/courses`);
+  if (!response.ok) return [];
   return response.json();
 }
 

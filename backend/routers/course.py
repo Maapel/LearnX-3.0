@@ -66,6 +66,48 @@ def _is_youtube(url: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Courses index (persists list of generated outlines for the history view)
+# ---------------------------------------------------------------------------
+
+_COURSES_INDEX_PATH = _CACHE_DIR / "courses_index.json"
+
+
+def _load_courses_index() -> list[dict]:
+    if _COURSES_INDEX_PATH.exists():
+        try:
+            return json.loads(_COURSES_INDEX_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def _save_to_courses_index(outline: dict) -> None:
+    """Upsert the outline into the courses index (keyed by course_title + difficulty)."""
+    import time as _time
+    courses = _load_courses_index()
+    key = f"{outline.get('course_title', '')}::{outline.get('difficulty_level', '')}"
+    entry = {
+        "course_title": outline.get("course_title", "Untitled"),
+        "difficulty_level": outline.get("difficulty_level", "Beginner"),
+        "estimated_hours": outline.get("estimated_hours", 0),
+        "module_count": len(outline.get("modules", [])),
+        "lesson_count": sum(len(m.get("lessons", [])) for m in outline.get("modules", [])),
+        "outline": outline,
+        "saved_at": int(_time.time()),
+        "_key": key,
+    }
+    # Replace existing entry with same key, else prepend
+    courses = [c for c in courses if c.get("_key") != key]
+    courses.insert(0, entry)
+    try:
+        _COURSES_INDEX_PATH.write_text(
+            json.dumps(courses, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        logger.warning("Failed to update courses index: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Shared sourcing helper
 # ---------------------------------------------------------------------------
 
@@ -105,6 +147,12 @@ async def _source_content(queries: list[str], difficulty: str) -> tuple[list, li
 # POST /api/generate-outline
 # ---------------------------------------------------------------------------
 
+@router.get("/courses")
+async def list_courses() -> list[dict]:
+    """Return all previously generated course outlines (newest first)."""
+    return _load_courses_index()
+
+
 @router.post("/generate-outline", response_model=CourseOutline)
 async def generate_outline(request: OutlineGenerateRequest) -> CourseOutline:
     """
@@ -120,7 +168,9 @@ async def generate_outline(request: OutlineGenerateRequest) -> CourseOutline:
     if cached:
         logger.info("Outline cache HIT: %r", topic)
         try:
-            return CourseOutline(**cached)
+            outline = CourseOutline(**cached)
+            _save_to_courses_index(cached)
+            return outline
         except Exception as e:
             logger.warning("Cached outline invalid (%s) — regenerating", e)
 
@@ -134,6 +184,7 @@ async def generate_outline(request: OutlineGenerateRequest) -> CourseOutline:
         raise HTTPException(status_code=500, detail=f"Outline validation failed: {exc}")
 
     _save_cache(cache_key, outline_dict)
+    _save_to_courses_index(outline_dict)
     return outline
 
 

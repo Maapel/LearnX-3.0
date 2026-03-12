@@ -70,6 +70,21 @@ export const LessonDetailSchema = z.object({
 export type LessonDetail = z.infer<typeof LessonDetailSchema>;
 
 // ---------------------------------------------------------------------------
+// Saved course (from GET /api/courses)
+// ---------------------------------------------------------------------------
+
+export const SavedCourseSchema = z.object({
+  course_title: z.string(),
+  difficulty_level: DifficultySchema,
+  estimated_hours: z.number(),
+  module_count: z.number(),
+  lesson_count: z.number(),
+  outline: CourseOutlineSchema,
+  saved_at: z.number(),
+});
+export type SavedCourse = z.infer<typeof SavedCourseSchema>;
+
+// ---------------------------------------------------------------------------
 // Request types
 // ---------------------------------------------------------------------------
 
