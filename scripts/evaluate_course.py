@@ -344,28 +344,50 @@ def main():
     parser = argparse.ArgumentParser(description="LearnX Course Evaluator")
     parser.add_argument("--topic",       default="Machine Learning", help="Course topic")
     parser.add_argument("--difficulty",  default="Intermediate",     choices=["Beginner", "Intermediate", "Advanced"])
-    parser.add_argument("--max-modules", type=int, default=0,        help="Limit number of modules to evaluate (0 = all)")
+    parser.add_argument("--max-modules", type=int, default=None,     help="Only evaluate this many modules (sampled: first, middle, last)")
+    parser.add_argument("--max-lessons", type=int, default=None,     help="Max lessons per module to evaluate")
+    parser.add_argument("--ollama-model", default=None,              help="Override OLLAMA_MODEL env var")
     args = parser.parse_args()
 
-    topic       = args.topic
-    difficulty  = args.difficulty
-    max_modules = args.max_modules
+    topic      = args.topic
+    difficulty = args.difficulty
+
+    # Override Ollama model if specified
+    if args.ollama_model:
+        global OLLAMA_MODEL
+        OLLAMA_MODEL = args.ollama_model
+        log(f"Using Ollama model: {OLLAMA_MODEL}")
 
     # 1. Generate outline
     outline = generate_outline(topic, difficulty)
     course_title = outline.get("course_title", topic)
-    modules = outline.get("modules", [])
-    if max_modules > 0:
-        modules = modules[:max_modules]
-        log(f"Limiting to {max_modules} module(s) for this run")
-    log(f"Outline ready: {course_title!r} — {len(modules)} modules")
+    all_modules  = outline.get("modules", [])
+    log(f"Outline ready: {course_title!r} — {len(all_modules)} modules total")
 
-    # 2. Generate every lesson + evaluate
+    # 2. Sample modules (spread across start/middle/end for representative coverage)
+    if args.max_modules and args.max_modules < len(all_modules):
+        n = args.max_modules
+        if n == 1:
+            indices = [0]
+        elif n == 2:
+            indices = [0, len(all_modules) - 1]
+        else:
+            step = (len(all_modules) - 1) / (n - 1)
+            indices = sorted(set(round(i * step) for i in range(n)))
+        modules = [all_modules[i] for i in indices]
+        log(f"Sampling {len(modules)} of {len(all_modules)} modules (indices {indices})")
+    else:
+        modules = all_modules
+
+    # 3. Generate lessons + evaluate
     lesson_results: list[dict] = []
 
     for mod_idx, mod in enumerate(modules, 1):
         log(f"\nModule {mod_idx}: {mod['module_title']}")
-        for lesson in mod.get("lessons", []):
+        lessons = mod.get("lessons", [])
+        if args.max_lessons:
+            lessons = lessons[:args.max_lessons]
+        for lesson in lessons:
             try:
                 lesson_data = generate_lesson(lesson, course_title, difficulty)
             except Exception as exc:
