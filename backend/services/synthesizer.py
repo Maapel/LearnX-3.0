@@ -457,6 +457,9 @@ def _groq_call(system_prompt: str, user_prompt: str, max_retries: int = 3, max_t
         except Exception as exc:
             err = str(exc)
             is_rate = "429" in err or "rate_limit" in err.lower()
+            is_tpd = "tokens per day" in err.lower() or "per_day" in err.lower()
+            if is_rate and is_tpd:
+                raise  # TPD exhausted — no point retrying, let cascade fall through
             if is_rate and attempt < max_retries - 1:
                 time.sleep(delays[attempt])
             else:
@@ -480,18 +483,46 @@ def _ollama_call(system_prompt: str, user_prompt: str) -> str:
         return response.json()["message"]["content"]
 
 
+_gemini_rate_limited = False  # sticky: once rate-limited, skip for rest of process lifetime
+_groq_rate_limited = False
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    msg = str(exc)
+    return "429" in msg or "rate_limit" in msg.lower() or "RESOURCE_EXHAUSTED" in msg
+
+
 def _llm_cascade(prompt: str, schema: genai_types.Schema, groq_system: str) -> str | None:
-    """Try Gemini → Groq → Ollama. Returns raw text or None."""
+    """Try Gemini → Groq → Ollama. Returns raw text or None.
+    Once a provider is rate-limited it is skipped for all subsequent calls."""
+    global _gemini_rate_limited, _groq_rate_limited
+
     # Gemini
-    try:
-        return _gemini_call(prompt, schema)
-    except Exception as e:
-        logger.warning("Gemini failed: %s — trying Groq", e)
+    if not _gemini_rate_limited:
+        try:
+            return _gemini_call(prompt, schema)
+        except Exception as e:
+            if _is_rate_limit(e):
+                _gemini_rate_limited = True
+                logger.warning("Gemini rate-limited — skipping Gemini for all future calls")
+            else:
+                logger.warning("Gemini failed: %s — trying Groq", e)
+    else:
+        logger.info("Gemini skipped (rate-limited earlier)")
+
     # Groq
-    try:
-        return _groq_call(groq_system, prompt)
-    except Exception as e:
-        logger.warning("Groq failed: %s — trying Ollama", e)
+    if not _groq_rate_limited:
+        try:
+            return _groq_call(groq_system, prompt)
+        except Exception as e:
+            if _is_rate_limit(e):
+                _groq_rate_limited = True
+                logger.warning("Groq rate-limited — skipping Groq for all future calls")
+            else:
+                logger.warning("Groq failed: %s — trying Ollama", e)
+    else:
+        logger.info("Groq skipped (rate-limited earlier)")
+
     # Ollama
     try:
         return _ollama_call(groq_system, prompt)
