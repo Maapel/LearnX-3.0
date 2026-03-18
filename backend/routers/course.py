@@ -199,7 +199,7 @@ async def generate_lesson(request: LessonGenerateRequest) -> LessonDetail:
     Runs sourcing (search + scrape) scoped to the specific lesson topic.
     Cached on disk by lesson_id.
     """
-    cache_key = f"lesson::{request.lesson_id}"
+    cache_key = f"lesson::{request.course_title}::{request.lesson_id}"
     cached = _load_cache(cache_key)
     if cached:
         if len(cached.get("sections", [])) >= 2:
