@@ -1,10 +1,14 @@
 """
 scraper_service.py — LearnX 3.0 Backend
 Fetches an article URL and extracts clean main body text.
+
+Primary:  Cloudflare Browser Rendering crawl API (returns markdown directly)
+Fallback: httpx + BeautifulSoup (when CF credentials are missing or CF fails)
 """
 
 import asyncio
 import logging
+import os
 import re
 
 import httpx
@@ -19,6 +23,9 @@ logger = logging.getLogger(__name__)
 TIMEOUT = 15  # seconds
 MAX_WORDS = 8000
 MAX_CHARS = 15000  # hard character cap per URL — keeps LLM token usage predictable
+
+_CF_ACCOUNT_ID = os.getenv("CF_ACCOUNT_ID", "")
+_CF_API_TOKEN = os.getenv("CF_API_TOKEN", "")
 
 HEADERS = {
     "User-Agent": (
@@ -92,26 +99,98 @@ def _extract_text(soup: BeautifulSoup) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Cloudflare Browser Rendering crawl API
 # ---------------------------------------------------------------------------
 
 
-async def scrape_article(url: str) -> dict:
-    """
-    Fetch *url* and return a dict with extracted article content.
+async def _scrape_via_cloudflare(url: str) -> dict | None:
+    """Use CF Browser Rendering crawl endpoint. Returns result dict or None on failure."""
+    if not _CF_ACCOUNT_ID or not _CF_API_TOKEN:
+        return None
 
-    Returns
-    -------
-    {
-        "url": str,
-        "title": str,
-        "content": str,
-        "word_count": int,
-        "success": bool,
-        "error": str | None,
+    cf_url = f"https://api.cloudflare.com/client/v4/accounts/{_CF_ACCOUNT_ID}/browser-rendering/crawl"
+    headers = {
+        "Authorization": f"Bearer {_CF_API_TOKEN}",
+        "Content-Type": "application/json",
     }
-    """
-    result = {
+    payload = {
+        "url": url,
+        "limit": 1,
+        "formats": ["markdown"],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # POST to start crawl
+            resp = await client.post(cf_url, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if not data.get("success"):
+                logger.warning("CF crawl POST failed: %s", data.get("errors"))
+                return None
+
+            job_id = data.get("result", {}).get("id")
+            if not job_id:
+                logger.warning("CF crawl returned no job ID")
+                return None
+
+            # Poll for results (max 10 attempts, 2s apart)
+            for attempt in range(10):
+                await asyncio.sleep(2)
+                poll = await client.get(f"{cf_url}/{job_id}", headers=headers)
+                poll.raise_for_status()
+                poll_data = poll.json()
+
+                result = poll_data.get("result", {})
+                status = result.get("status", "")
+
+                if status == "completed":
+                    records = result.get("records", [])
+                    if not records:
+                        return None
+
+                    record = records[0]
+                    markdown = record.get("markdown", "")
+                    if not markdown:
+                        return None
+
+                    content = _cap_words(markdown)
+                    content = content[:MAX_CHARS]
+
+                    title = record.get("title", "") or url
+                    word_count = len(content.split())
+                    logger.info("CF crawl success: '%s' — %d words", title, word_count)
+
+                    return {
+                        "url": url,
+                        "title": title,
+                        "content": content,
+                        "word_count": word_count,
+                        "success": True,
+                        "error": None,
+                    }
+
+                if status in ("errored", "cancelled_due_to_timeout"):
+                    logger.warning("CF crawl %s for %s", status, url)
+                    return None
+
+            logger.warning("CF crawl timed out polling for %s", url)
+            return None
+
+    except Exception as exc:
+        logger.warning("CF crawl error for %s: %s", url, exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Fallback: httpx + BeautifulSoup
+# ---------------------------------------------------------------------------
+
+
+async def _scrape_via_httpx(url: str) -> dict:
+    """Fetch URL with httpx and parse with BeautifulSoup."""
+    result: dict = {
         "url": url,
         "title": "",
         "content": "",
@@ -126,7 +205,7 @@ async def scrape_article(url: str) -> dict:
             timeout=TIMEOUT,
             headers=HEADERS,
         ) as client:
-            logger.info("Fetching URL: %s", url)
+            logger.info("Fetching URL (httpx fallback): %s", url)
             response = await client.get(url)
             response.raise_for_status()
 
@@ -163,6 +242,36 @@ async def scrape_article(url: str) -> dict:
         result["error"] = msg
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+async def scrape_article(url: str) -> dict:
+    """
+    Fetch *url* and return a dict with extracted article content.
+    Tries Cloudflare Browser Rendering first, falls back to httpx+BS4.
+
+    Returns
+    -------
+    {
+        "url": str,
+        "title": str,
+        "content": str,
+        "word_count": int,
+        "success": bool,
+        "error": str | None,
+    }
+    """
+    # Try Cloudflare first
+    cf_result = await _scrape_via_cloudflare(url)
+    if cf_result:
+        return cf_result
+
+    # Fallback to httpx + BeautifulSoup
+    return await _scrape_via_httpx(url)
 
 
 # ---------------------------------------------------------------------------
